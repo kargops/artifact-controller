@@ -150,7 +150,7 @@ jobs:
           # Legacy signature format on purpose: Artifact Hub's tracker (and
           # most Helm-ecosystem verifiers) look for the classic .sig tag, not
           # cosign v3's OCI 1.1 referrer bundles.
-          cosign sign --yes --new-bundle-format=false \
+          cosign sign --yes --new-bundle-format=false --use-signing-config=false \
             "ghcr.io/${{ github.repository_owner }}/charts/artifact-controller@$digest"
           cosign verify "ghcr.io/${{ github.repository_owner }}/charts/artifact-controller@$digest" \
             --certificate-identity "$IDENTITY" \
