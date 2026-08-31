@@ -12,7 +12,7 @@ spec:
     keyTemplate: "build-{{ .SpecHex }}"
     oci:
       repository: 123456789012.dkr.ecr.eu-west-1.amazonaws.com/services
-      stampAnnotation: dev.artifacts.spec-hash
+      stampAnnotation: dev.kargops.artifacts.spec-hash
   generator:
     template:
       apiVersion: tekton.dev/v1
@@ -32,7 +32,7 @@ spec:
           # The generator contract: push exactly here, stamped with this hash.
           # With kaniko:
           #   --destination=$(params.image-ref)
-          #   --label=dev.artifacts.spec-hash=$(params.stamp)
+          #   --label=dev.kargops.artifacts.spec-hash=$(params.stamp)
           - name: image-ref
             value: "123456789012.dkr.ecr.eu-west-1.amazonaws.com/services:{{ .Key }}"
           - name: stamp

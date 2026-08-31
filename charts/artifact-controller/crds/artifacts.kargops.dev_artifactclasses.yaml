@@ -355,7 +355,7 @@ spec:
                           The rendered store key is the TAG within this repository.
                         type: string
                       stampAnnotation:
-                        default: dev.artifacts.spec-hash
+                        default: dev.kargops.artifacts.spec-hash
                         description: |-
                           StampAnnotation is the manifest annotation (or image config label)
                           carrying the generator's provenance stamp.

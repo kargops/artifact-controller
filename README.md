@@ -19,6 +19,14 @@ Artifact (intent)            ArtifactClass (how)              External store
       └────────────── observe / verify / regenerate ───────────────┘
 ```
 
+> **Status: v1alpha1.** The design is stable and the loop is proven end to end
+> on a real cluster (build → verify → self-heal), but the API may still change
+> and several store drivers have only been exercised against test doubles.
+> Expect sharp edges; file issues freely.
+
+**New here? Start with the [quickstart](docs/quickstart.md)** — one kind
+cluster, no cloud account, ten minutes to watching an artifact self-heal.
+
 ## The identity contract (content addressing)
 
 `status.specHash = sha256(canonical(spec.identity))` is the artifact's
@@ -29,7 +37,7 @@ content address:
   deterministic HEAD.
 - **Generators must stamp** the object they upload with the hash (S3 object
   metadata `artifact-spec-hash`; OCI manifest annotation or image label
-  `dev.artifacts.spec-hash`). A present-but-differently-stamped object is a
+  `dev.kargops.artifacts.spec-hash`). A present-but-differently-stamped object is a
   `KeyConflict`: the controller will neither adopt nor overwrite nor delete it.
 - `spec.identity` and `spec.classRef` are **immutable** (CEL-validated):
   changing intent means creating a new Artifact.
@@ -121,7 +129,7 @@ Template fields: `.Identity`, `.Params`, `.SpecHash` (`sha256:<hex>`),
 | Driver | Backend | Existence check | Stamp location | Key default |
 |---|---|---|---|---|
 | `s3` | S3 / MinIO / LocalStack | `HeadObject` (no download) | object metadata `artifact-spec-hash` | `{{ .SpecHash }}` |
-| `oci` | ECR / GHCR / Harbor / any registry | manifest `GET` (no layer pulls) | manifest annotation `dev.artifacts.spec-hash`, falling back to image config label | `{{ .SpecHex }}` |
+| `oci` | ECR / GHCR / Harbor / any registry | manifest `GET` (no layer pulls) | manifest annotation `dev.kargops.artifacts.spec-hash`, falling back to image config label | `{{ .SpecHex }}` |
 | `artifactory` | JFrog Artifactory | storage API, one call | artifact property `artifact-spec-hash` | `{{ .SpecHash }}` |
 | `nexus` | Sonatype Nexus | asset search | none — Nexus has no asset metadata, so the key carries provenance | `{{ .SpecHash }}` |
 | `ami` | EC2 machine images | `DescribeImages` by name | EC2 tag `artifact-spec-hash` | `{{ .SpecHash }}` |
@@ -158,9 +166,12 @@ store:
 
 Expressions see `code` (int), `headers` (lowercased map), `body`, and `json`
 (the decoded body, an empty map when the response is not JSON). Auth is
-`none`, `bearer`, `basic`, or `header` — a verbatim header value from a secret,
-for proprietary schemes like Artifactory's `X-JFrog-Art-Api`. Anything needing
-bespoke request signing belongs in a real driver, not in configuration.
+`none`, `bearer`, `basic`, `header` (a verbatim header value from a secret, for
+proprietary schemes like Artifactory's `X-JFrog-Art-Api`), `sigv4` (requests
+signed with the controller's ambient AWS identity — no secret involved), or
+`clientCredentials` (OAuth2 exchange with the token cached until expiry — the
+Microsoft Graph / Keycloak flow). Anything needing bespoke, non-standard
+signing belongs in a real driver, not in configuration.
 
 Two deliberate limits. Response bodies are **capped at 64KiB**, so an existence
 probe can never quietly become a download. And credentials are read **only from
@@ -232,22 +243,38 @@ same intent becomes Ready by observation without triggering a duplicate build
 
 ## Install
 
-```sh
-kubectl apply --server-side -f https://<your-release-url>/install.yaml
-```
-
-Then grant the controller access to the generator engines you use — these are
-ClusterRoles labelled `artifacts.kargops.dev/aggregate-to-manager: "true"`, which
-aggregate into the manager's role at runtime, no redeploy needed:
+Helm, from GHCR (chart and image are published by the release workflow):
 
 ```sh
-kubectl apply -f config/rbac/generator-engines/tekton.yaml
+helm install artifact-controller oci://ghcr.io/kargops/charts/artifact-controller \
+  --version 0.8.0 -n artifact-system --create-namespace
 ```
+
+Or the flat bundle (CRDs + RBAC + Deployment, pinned to the release's image):
+
+```sh
+kubectl apply --server-side -f \
+  https://github.com/kargops/artifact-controller/releases/latest/download/install.yaml
+```
+
+Kustomize users can consume `config/default` as a remote base instead.
+
+Then grant the controller the generator engines your classes use. The chart
+does this via values (`generator.engines.batchJob` is on by default; Tekton
+and Argo Workflows are toggles). With the flat bundle, apply the matching
+ClusterRole from `config/rbac/generator-engines/` — they carry the
+`artifacts.kargops.dev/aggregate-to-manager: "true"` label and aggregate into
+the manager's role at runtime, no redeploy needed.
 
 The controller holds **no wildcard cluster permissions**: out of the box it can
 only touch its own CRs, events, leases, and secrets *in its own namespace*
 (which the `http` driver needs for store credentials). Engine access is opt-in
 and explicit.
+
+Working classes to start from live in [`config/samples/`](config/samples/):
+S3 + Tekton, S3 + Argo Workflows, ECR images built by a Tekton kaniko
+pipeline, an HTTP-driver class for Nexus, and an Entra ID account observed via
+Microsoft Graph (read its header warning before pointing it at people).
 
 ### Availability
 
@@ -310,7 +337,8 @@ role usually already grants.
 
 ### CI
 
-No pipeline is checked in. `ci/test.sh` is the whole gate — generated files
+GitHub Actions (`.github/workflows/ci.yml`) runs `ci/test.sh` on pushes
+to main and on every PR — and that script is the whole gate — generated files
 current, gofmt, vet, unit tests and the envtest suite — so any CI system runs
 one command:
 
@@ -323,18 +351,21 @@ the integration suite then skips itself and the unit tests still gate the run.
 
 ### Cutting a release
 
-```sh
-make release IMG=ghcr.io/you/artifact-controller VERSION=v0.1.0
-```
+Releases are tag-driven (`.github/workflows/release.yml`):
 
-This pushes a multi-arch image (`docker buildx`, linux/amd64+arm64,
-distroless-nonroot) and renders `dist/install.yaml` pinned to that tag —
-publish it as a release asset. `make deploy` applies it to the current
-kubecontext; `make undeploy` removes it (CRDs included, which deletes every
-Artifact object).
+1. Bump `version` and `appVersion` in `charts/artifact-controller/Chart.yaml`
+   (the gate refuses a tag they do not match).
+2. `git tag vX.Y.Z && git push origin vX.Y.Z`
 
-Kustomize users can consume `config/default` directly as a remote base instead
-of the flat bundle.
+The workflow runs the gate, pushes the multi-arch image to
+`ghcr.io/kargops/artifact-controller`, pushes the chart to
+`oci://ghcr.io/kargops/charts`, renders `dist/install.yaml` pinned to that
+image, and creates a GitHub release carrying it. It **refuses to republish an
+existing chart version** — published versions are immutable.
+
+First-release note: GHCR packages start private. Make the two packages
+(`artifact-controller`, `charts/artifact-controller`) public in the org's
+package settings or anonymous installs will fail.
 
 ## Development
 
@@ -379,9 +410,6 @@ Roadmap, roughly in order of value:
 - Event-driven requeues (S3 EventBridge / ECR events), Prometheus metrics, and
   optionally emitting Flux `ExternalArtifact` objects (RFC-0012) so
   kustomize/helm controllers can consume generated manifests.
-
-The API group (`artifacts.kargops.dev`) and module path are placeholders — rename
-before publishing.
 
 ## License
 

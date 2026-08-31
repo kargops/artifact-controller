@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: azure/setup-helm@v5
+      # The whole gate lives in one script so CI and a laptop run the same
+      # thing: generated-files freshness, gofmt, vet, helm lint, unit tests,
+      # and the envtest suite (binaries downloaded by setup-envtest).
+      - name: Run the gate
+        run: ./ci/test.sh

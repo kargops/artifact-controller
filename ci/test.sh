@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Test entrypoint for CI (see .gitlab-ci.yml) and for reproducing CI locally.
+# Test entrypoint for CI (see .github/workflows/) and for reproducing CI locally.
 #
 # Beyond running the suite, this asserts that generated artifacts (deepcopy
 # code, CRDs, RBAC) are committed and up to date — otherwise a stale CRD in
@@ -8,10 +8,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# The CI test-script component invokes this as `bash -lc`, and a login shell
-# sources /etc/profile, which on Debian *overwrites* PATH — dropping
-# /usr/local/go/bin that the golang image sets via ENV. Put the toolchain back
-# before anything needs it.
+# Defensive: some CI systems invoke scripts via a login shell (`bash -lc`),
+# and Debian's /etc/profile then *overwrites* PATH — dropping /usr/local/go/bin
+# that golang images set via ENV. Put the toolchain back before anything
+# needs it. (This bit a previous CI setup; kept because it is cheap.)
 if ! command -v go >/dev/null 2>&1; then
   for candidate in "${GOROOT:-}/bin" /usr/local/go/bin /usr/lib/go/bin; do
     if [ -x "${candidate}/go" ]; then

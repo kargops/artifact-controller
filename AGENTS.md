@@ -57,7 +57,7 @@ rule here was earned by a real incident, noted inline.
 | New auth scheme (http driver) | `internal/store/httpstore/auth*.go`, `HTTPAuthSpec` | a test asserting the header/exchange, and that failures never echo the credential |
 | Generator interpretation | `internal/generator/`, class-facing fields in `api/` | CEL evaluated via the real evaluator in tests, not by eye |
 | Chart template | `charts/artifact-controller/` | bump `Chart.yaml` version + appVersion; `make helm-lint` |
-| Release | tag `vX.Y.Z` | `Chart.yaml` must match the tag (`ci/test.sh` enforces on tags) |
+| Release | tag `vX.Y.Z` | `Chart.yaml` must match the tag (`ci/test.sh` enforces); the release workflow refuses to republish an existing chart version |
 
 ## Testing
 

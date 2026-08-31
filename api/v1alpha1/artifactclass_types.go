@@ -92,14 +92,14 @@ type OCIStoreSpec struct {
 
 	// StampAnnotation is the manifest annotation (or image config label)
 	// carrying the generator's provenance stamp.
-	// +kubebuilder:default:="dev.artifacts.spec-hash"
+	// +kubebuilder:default:="dev.kargops.artifacts.spec-hash"
 	// +optional
 	StampAnnotation string `json:"stampAnnotation,omitempty"`
 }
 
 // DefaultOCIStampAnnotation is the default provenance annotation for the oci
 // driver (reverse-domain per OCI annotation conventions).
-const DefaultOCIStampAnnotation = "dev.artifacts.spec-hash"
+const DefaultOCIStampAnnotation = "dev.kargops.artifacts.spec-hash"
 
 // FakeStoreSpec configures the in-memory fake driver.
 type FakeStoreSpec struct{}

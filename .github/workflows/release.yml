@@ -1,0 +1,132 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: azure/setup-helm@v5
+      # CI_COMMIT_TAG arms the gate's release assertion: Chart.yaml's
+      # version/appVersion must match the tag being released.
+      - name: Run the gate
+        env:
+          CI_COMMIT_TAG: ${{ github.ref_name }}
+        run: ./ci/test.sh
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub release
+      packages: write # push image + chart to GHCR
+    env:
+      IMG: ghcr.io/${{ github.repository_owner }}/artifact-controller
+      CHART_OCI: oci://ghcr.io/${{ github.repository_owner }}/charts
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: azure/setup-helm@v5
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log helm into GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      # Published chart versions are immutable. OCI pushes overwrite silently,
+      # so this guard must FAIL CLOSED: only an explicit not-found may pass.
+      # (helm pull exits 1 identically for "absent", "auth failed", and
+      # "registry down" — the exit code alone cannot distinguish "verified
+      # absent" from "could not verify".) A re-run after a partial release is
+      # allowed only when the published content is byte-identical.
+      - name: Refuse to republish an existing chart version
+        id: guard
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          if out=$(helm pull "$CHART_OCI/artifact-controller" --version "$v" -d /tmp 2>&1); then
+            mkdir -p /tmp/pulled /tmp/local
+            tar -xzf "/tmp/artifact-controller-$v.tgz" -C /tmp/pulled
+            helm package charts/artifact-controller -d /tmp/local >/dev/null
+            tar -xzf "/tmp/local/artifact-controller-$v.tgz" -C /tmp/local
+            if diff -r /tmp/pulled/artifact-controller /tmp/local/artifact-controller >/dev/null; then
+              echo "chart $v already published with identical content — skipping chart push (job re-run)"
+              echo "push=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::chart version $v already exists in $CHART_OCI with different content — bump Chart.yaml"
+            exit 1
+          fi
+          if ! echo "$out" | grep -qiE 'not found|manifest unknown|name unknown'; then
+            echo "$out"
+            echo "::error::could not verify that chart version $v is unpublished — refusing to push"
+            exit 1
+          fi
+          echo "chart version $v is unpublished — ok"
+          echo "push=true" >> "$GITHUB_OUTPUT"
+
+      # The Dockerfile cross-compiles via TARGETARCH from the build platform,
+      # so no QEMU is needed for the multi-arch build.
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMG }}:${{ github.ref_name }}
+            ${{ env.IMG }}:latest
+
+      - name: Package and push the chart
+        if: steps.guard.outputs.push == 'true'
+        run: |
+          mkdir -p dist
+          helm package charts/artifact-controller -d dist/
+          helm push "dist/artifact-controller-${GITHUB_REF_NAME#v}.tgz" "$CHART_OCI"
+
+      - name: Render the install bundle pinned to this release
+        run: |
+          make release-manifest IMG="$IMG" VERSION="$GITHUB_REF_NAME"
+          grep -q "image: $IMG:$GITHUB_REF_NAME" dist/install.yaml
+          echo "install bundle pinned to $IMG:$GITHUB_REF_NAME"
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > /tmp/notes.md <<NOTES
+          ## Install
+
+          Helm:
+
+              helm install artifact-controller $CHART_OCI/artifact-controller \\
+                --version ${GITHUB_REF_NAME#v} -n artifact-system --create-namespace
+
+          Flat bundle (CRDs + RBAC + Deployment, pinned to $IMG:$GITHUB_REF_NAME):
+
+              kubectl apply --server-side -f \\
+                https://github.com/${{ github.repository }}/releases/download/$GITHUB_REF_NAME/install.yaml
+
+          Then see the quickstart: docs/quickstart.md
+          NOTES
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/install.yaml --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/install.yaml \
+              --title "artifact-controller $GITHUB_REF_NAME" \
+              --notes-file /tmp/notes.md
+          fi
