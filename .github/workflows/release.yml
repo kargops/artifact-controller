@@ -200,10 +200,11 @@ jobs:
                 --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/release.yml@$GITHUB_REF" \\
                 --certificate-oidc-issuer https://token.actions.githubusercontent.com
           NOTES
+          assets=(dist/install.yaml dist/crds.yaml dist/sbom.amd64.spdx.json dist/sbom.arm64.spdx.json)
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/install.yaml dist/crds.yaml dist/sbom.amd64.spdx.json dist/sbom.arm64.spdx.json --clobber
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/install.yaml dist/sbom.spdx.json \
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
               --title "artifact-controller $GITHUB_REF_NAME" \
               --notes-file /tmp/notes.md
           fi
