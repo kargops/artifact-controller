@@ -363,6 +363,19 @@ The workflow runs the gate, pushes the multi-arch image to
 image, and creates a GitHub release carrying it. It **refuses to republish an
 existing chart version** — published versions are immutable.
 
+### Artifact Hub
+
+The chart carries `artifacthub.io/*` annotations (CRD cards, examples, images,
+changelog) and a chart-level README, so the listing is rich out of the box. To
+(re)list it: add a repository in the Artifact Hub control panel with kind
+**Helm charts** and url `oci://ghcr.io/kargops/charts/artifact-controller`
+(one OCI repo = one chart; versions are discovered from semver tags). Then
+link it for the verified-publisher badge:
+
+```sh
+make artifacthub-metadata AH_REPO_ID=<uuid from the control panel>
+```
+
 First-release note: GHCR packages start private. Make the two packages
 (`artifact-controller`, `charts/artifact-controller`) public in the org's
 package settings or anonymous installs will fail.

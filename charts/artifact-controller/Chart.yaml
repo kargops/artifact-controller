@@ -1,15 +1,18 @@
 apiVersion: v2
 name: artifact-controller
 description: >-
-  Declare build artifacts (S3 objects, ECR images) as Kubernetes objects; the
-  controller generates them via your pipelines and continuously verifies they
-  still exist in their store.
+  Declare build artifacts (S3 objects, ECR images, Nexus/Artifactory assets,
+  AMIs) as Kubernetes objects; the controller generates them via your
+  pipelines when they are missing and continuously verifies they still exist
+  in their store.
 type: application
 
-# Chart version: bump on every release. The publish-chart-stable job runs on
-# tags, and ci/test.sh asserts these two match the tag being built.
-version: 0.8.0
-appVersion: "v0.8.0"
+# Chart version: bump on every release (published versions are immutable and
+# the release workflow refuses to republish). ci/test.sh asserts version and
+# appVersion match the tag being released. When bumping, also refresh the
+# artifacthub.io/images tag and artifacthub.io/changes below.
+version: 0.8.1
+appVersion: "v0.8.1"
 
 kubeVersion: ">=1.27.0-0"
 home: https://github.com/kargops/artifact-controller
@@ -21,6 +24,90 @@ keywords:
   - gitops
   - s3
   - ecr
+  - oci
+  - operator
 maintainers:
   - name: Idan Cohen
     email: idan.c@protonmail.com
+
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/operator: "true"
+  artifacthub.io/category: integration-delivery
+  artifacthub.io/prerelease: "false"
+  artifacthub.io/links: |
+    - name: Quickstart (kind, ten minutes, no cloud account)
+      url: https://github.com/kargops/artifact-controller/blob/main/docs/quickstart.md
+    - name: Sample ArtifactClasses (Tekton, Argo, kaniko, Nexus, Graph)
+      url: https://github.com/kargops/artifact-controller/tree/main/config/samples
+    - name: support
+      url: https://github.com/kargops/artifact-controller/issues
+  artifacthub.io/images: |
+    - name: artifact-controller
+      image: ghcr.io/kargops/artifact-controller:v0.8.1
+      platforms:
+        - linux/amd64
+        - linux/arm64
+  artifacthub.io/crds: |
+    - kind: Artifact
+      version: v1alpha1
+      name: artifacts.artifacts.kargops.dev
+      displayName: Artifact
+      description: >-
+        A declared artifact, identified by an immutable identity map whose
+        canonical hash is the content-addressed store key. The controller
+        keeps it existing: generating on absence, verifying provenance, and
+        detecting drift.
+    - kind: ArtifactClass
+      version: v1alpha1
+      name: artifactclasses.artifacts.kargops.dev
+      displayName: ArtifactClass
+      description: >-
+        The StorageClass analog: where artifacts of a family live (store
+        driver) and how to make one (any Kubernetes object as a generator
+        template, interpreted engine-agnostically via CEL).
+  artifacthub.io/crdsExamples: |
+    - apiVersion: artifacts.kargops.dev/v1alpha1
+      kind: ArtifactClass
+      metadata:
+        name: quickstart
+      spec:
+        store:
+          driver: oci
+          oci:
+            repository: registry.quickstart.svc.cluster.local:5000/demo
+            insecure: true
+        generator:
+          template:
+            apiVersion: batch/v1
+            kind: Job
+            spec:
+              backoffLimit: 0
+              template:
+                spec:
+                  restartPolicy: Never
+                  containers:
+                    - name: generate
+                      image: gcr.io/go-containerregistry/crane:v0.20.3
+                      args:
+                        - copy
+                        - registry.k8s.io/pause:3.10
+                        - registry.quickstart.svc.cluster.local:5000/demo:{{ .Key }}
+                        - --insecure
+          succeededWhen: "status.conditions.exists(c, c.type == 'Complete' && c.status == 'True')"
+          failedWhen: "status.conditions.exists(c, c.type == 'Failed' && c.status == 'True')"
+    - apiVersion: artifacts.kargops.dev/v1alpha1
+      kind: Artifact
+      metadata:
+        name: hello
+      spec:
+        classRef:
+          name: quickstart
+        identity:
+          demo: hello
+        interval: 30s
+  artifacthub.io/changes: |
+    - kind: added
+      description: Artifact Hub listing metadata (chart README, CRD cards, examples)
+    - kind: changed
+      description: chart is now published to ghcr.io/kargops/charts on every release tag

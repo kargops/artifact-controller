@@ -114,3 +114,20 @@ deploy: release-manifest ## Apply the full install to the current cluster.
 .PHONY: undeploy
 undeploy: ## Remove the controller (CRDs included — deletes all Artifact objects).
 	kubectl delete --ignore-not-found -f dist/install.yaml
+
+# One-time after adding the repository on artifacthub.io (control panel →
+# repositories → Add → kind "Helm charts", url oci://ghcr.io/kargops/charts/artifact-controller):
+# grab the repository ID it assigns and run
+#   make artifacthub-metadata AH_REPO_ID=<uuid>
+# This pushes artifacthub-repo.yml under the special `artifacthub.io` tag,
+# which links the listing to the repo and grants the verified-publisher badge.
+# Requires oras (brew install oras) logged into ghcr.io.
+.PHONY: artifacthub-metadata
+artifacthub-metadata:
+	@test -n "$(AH_REPO_ID)" || { echo "AH_REPO_ID is required"; exit 1; }
+	mkdir -p dist
+	sed 's/REPLACE_WITH_ARTIFACTHUB_REPOSITORY_ID/$(AH_REPO_ID)/' \
+		$(CHART_DIR)/artifacthub-repo.yml > dist/artifacthub-repo.yml
+	cd dist && oras push ghcr.io/kargops/charts/artifact-controller:artifacthub.io \
+		--config /dev/null:application/vnd.cncf.artifacthub.config.v1+yaml \
+		artifacthub-repo.yml:application/vnd.cncf.artifacthub.repository-metadata.layer.v1.yaml

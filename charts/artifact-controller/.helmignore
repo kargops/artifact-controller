@@ -4,3 +4,6 @@
 *.tgz
 # Placeholder values used only by the CI validate job.
 ci-values.yaml
+# Published to Artifact Hub separately via oras (make artifacthub-metadata),
+# never inside the chart package.
+artifacthub-repo.yml

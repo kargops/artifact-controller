@@ -1,0 +1,10 @@
+# Artifact Hub repository metadata for the OCI chart repo
+# oci://ghcr.io/kargops/charts/artifact-controller.
+#
+# Publishing this (see `make artifacthub-metadata`) links the listing to a
+# repository ID and grants the "verified publisher" badge. The repositoryID
+# comes from Artifact Hub's control panel after the repository is added there.
+repositoryID: REPLACE_WITH_ARTIFACTHUB_REPOSITORY_ID
+owners:
+  - name: Idan Cohen
+    email: idan.c@protonmail.com
