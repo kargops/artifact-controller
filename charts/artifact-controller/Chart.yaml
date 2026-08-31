@@ -113,3 +113,5 @@ annotations:
       description: image carries an SPDX SBOM attestation; the SBOM is also a release asset
     - kind: changed
       description: CRDs are now installed and upgraded with the release (crds.install, default true) and carry helm.sh/resource-policy keep; set crds.install=false for out-of-band CRD management
+    - kind: added
+      description: values.schema.json — helm validates values on install/upgrade, and typos in value names fail instead of being silently ignored

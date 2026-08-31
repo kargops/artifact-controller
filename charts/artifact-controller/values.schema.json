@@ -1,0 +1,134 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "artifact-controller chart values",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "global": {
+      "description": "Injected by Helm when this chart is used as a dependency; not consumed here.",
+      "type": "object"
+    },
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "crds": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "install": {
+          "type": "boolean",
+          "description": "Install and upgrade the CRDs with this release (they carry helm.sh/resource-policy: keep). Set false when CRDs are managed out of band."
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": {
+          "type": "string",
+          "description": "Empty means the chart's appVersion."
+        },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": { "name": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "replicaCount": { "type": "integer", "minimum": 0 },
+    "podDisruptionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minAvailable": { "oneOf": [{ "type": "integer" }, { "type": "string" }] },
+        "maxUnavailable": { "oneOf": [{ "type": "integer" }, { "type": "string" }] }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": {
+          "type": "string",
+          "description": "The attachment point for cloud identity (Pod Identity / IRSA); renaming silently detaches it."
+        },
+        "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "controller": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "leaderElect": { "type": "boolean" },
+        "concurrentReconciles": { "type": "integer", "minimum": 1 },
+        "enableFakeStore": {
+          "type": "boolean",
+          "description": "In-memory store driver, demos only: nothing in a real cluster can ever satisfy it."
+        },
+        "logLevel": { "type": "string" },
+        "extraArgs": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "generator": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "serviceAccount": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "create": { "type": "boolean" },
+            "name": {
+              "type": "string",
+              "description": "Identity generator runs use — the one that writes to stores. Class templates reference it by name."
+            },
+            "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        },
+        "engines": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Each enabled engine renders an aggregation-labelled ClusterRole; the controller ships no wildcard permissions.",
+          "properties": {
+            "batchJob": { "type": "boolean" },
+            "tekton": { "type": "boolean" },
+            "argoWorkflows": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "resources": { "type": "object" },
+    "podAnnotations": { "type": "object", "additionalProperties": { "type": "string" } },
+    "podLabels": { "type": "object", "additionalProperties": { "type": "string" } },
+    "nodeSelector": { "type": "object", "additionalProperties": { "type": "string" } },
+    "tolerations": { "type": "array", "items": { "type": "object" } },
+    "affinity": { "type": "object" },
+    "topologySpreadConstraints": { "type": "array", "items": { "type": "object" } },
+    "priorityClassName": { "type": "string" },
+    "podSecurityContext": { "type": "object" },
+    "securityContext": { "type": "object" },
+    "env": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": { "name": { "type": "string", "minLength": 1 } }
+      }
+    }
+  }
+}
