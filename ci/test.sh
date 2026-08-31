@@ -63,6 +63,12 @@ if [ -n "${CI_COMMIT_TAG:-}" ]; then
     echo "   version=$chart_version (want $want), appVersion=$app_version (want $CI_COMMIT_TAG)"
     exit 1
   fi
+  # The artifacthub.io/images annotation is what Artifact Hub lists and
+  # security-scans for this chart version; a stale tag there shipped once.
+  if ! grep -q "image: ghcr.io/kargops/artifact-controller:$CI_COMMIT_TAG\$" charts/artifact-controller/Chart.yaml; then
+    echo "❌ artifacthub.io/images in Chart.yaml does not reference $CI_COMMIT_TAG"
+    exit 1
+  fi
 fi
 
 echo "==> gofmt"
