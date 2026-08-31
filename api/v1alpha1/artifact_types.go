@@ -32,8 +32,24 @@ const (
 	DeletionPolicyDelete DeletionPolicy = "Delete"
 )
 
+// ManagementPolicy is how much of the artifact's lifecycle the controller
+// owns.
+type ManagementPolicy string
+
+const (
+	// ManagementPolicyFull closes the loop: generate when missing, delete per
+	// deleteAfter/deletionPolicy (default).
+	ManagementPolicyFull ManagementPolicy = "Full"
+	// ManagementPolicyObserve turns the Artifact into a sensor: existence and
+	// drift are reported through conditions, but the controller never runs a
+	// generator and never writes to the store.
+	ManagementPolicyObserve ManagementPolicy = "Observe"
+)
+
 // ArtifactSpec declares the intent: an artifact, uniquely identified by its
 // identity keys, that must exist in the class's external store.
+// +kubebuilder:validation:XValidation:rule="!(has(self.managementPolicy) && self.managementPolicy == 'Observe' && has(self.deleteAfter))",message="managementPolicy Observe cannot be combined with deleteAfter, which deletes from the store"
+// +kubebuilder:validation:XValidation:rule="!(has(self.managementPolicy) && self.managementPolicy == 'Observe' && has(self.deletionPolicy) && self.deletionPolicy == 'Delete')",message="managementPolicy Observe cannot be combined with deletionPolicy Delete, which deletes from the store"
 type ArtifactSpec struct {
 	// ClassRef names the cluster-scoped ArtifactClass that defines the store
 	// driver and the generator able to materialize this artifact.
@@ -92,6 +108,17 @@ type ArtifactSpec struct {
 	// +kubebuilder:default:=Orphan
 	// +optional
 	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
+
+	// ManagementPolicy: Full (default) closes the loop — generate when
+	// missing, delete per deleteAfter/deletionPolicy. Observe watches without
+	// acting: a missing artifact means Ready=False until an external producer
+	// fills the key, drift is reported but never regenerated, and no store
+	// write ever happens. Deliberately mutable: flipping Observe to Full is
+	// the adoption path from watching an artifact to owning it.
+	// +kubebuilder:validation:Enum=Full;Observe
+	// +kubebuilder:default:=Full
+	// +optional
+	ManagementPolicy ManagementPolicy `json:"managementPolicy,omitempty"`
 }
 
 // GeneratorReference points at the generator run currently owned by this
@@ -190,6 +217,12 @@ func (in *Artifact) GetConditions() []metav1.Condition {
 // SetConditions sets the status conditions on the object.
 func (in *Artifact) SetConditions(conditions []metav1.Condition) {
 	in.Status.Conditions = conditions
+}
+
+// ObserveOnly reports whether this Artifact is a sensor rather than an
+// actuator: no generator runs, no store writes.
+func (in *Artifact) ObserveOnly() bool {
+	return in.Spec.ManagementPolicy == ManagementPolicyObserve
 }
 
 // GetInterval returns the effective re-verification interval.

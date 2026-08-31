@@ -48,8 +48,9 @@ is a values change with no controller restart.
    stores; generator runs write to them) — the repo README's
    [AWS credentials](https://github.com/kargops/artifact-controller#aws-credentials)
    section has the exact Pod Identity commands and IAM actions per store.
-2. Define an `ArtifactClass` (store driver + generator template + CEL status
-   interpretation) — start from
+2. Define an `ArtifactClass` (store driver, plus a generator template + CEL
+   status interpretation unless it only backs observe-only Artifacts) — start
+   from
    [config/samples](https://github.com/kargops/artifact-controller/tree/main/config/samples).
 3. Declare `Artifact`s against it and watch `kubectl get artifacts -w`.
 

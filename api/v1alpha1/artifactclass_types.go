@@ -181,8 +181,12 @@ type ArtifactClassSpec struct {
 	// +required
 	Store StoreSpec `json:"store"`
 
-	// +required
-	Generator GeneratorSpec `json:"generator"`
+	// Generator describes how to produce a missing artifact. Optional so a
+	// class can back observe-only Artifacts (managementPolicy: Observe); a
+	// Full-policy Artifact referencing a generator-less class stalls with
+	// GeneratorNotConfigured.
+	// +optional
+	Generator *GeneratorSpec `json:"generator,omitempty"`
 
 	// +optional
 	Backoff *BackoffSpec `json:"backoff,omitempty"`
@@ -288,8 +292,8 @@ func init() {
 // ProgressDeadline returns how long a run may stay in progress before it is
 // counted as failed. Zero means no deadline beyond the engine's own.
 func (in *ArtifactClass) ProgressDeadline() time.Duration {
-	if d := in.Spec.Generator.ProgressDeadline; d != nil {
-		return d.Duration
+	if g := in.Spec.Generator; g != nil && g.ProgressDeadline != nil {
+		return g.ProgressDeadline.Duration
 	}
 	return 0
 }

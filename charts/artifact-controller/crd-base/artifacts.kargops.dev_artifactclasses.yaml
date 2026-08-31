@@ -92,8 +92,10 @@ spec:
                 type: object
               generator:
                 description: |-
-                  GeneratorSpec defines how to materialize artifacts of this class and how to
-                  interpret the generator's status, engine-agnostically via CEL.
+                  Generator describes how to produce a missing artifact. Optional so a
+                  class can back observe-only Artifacts (managementPolicy: Observe); a
+                  Full-policy Artifact referencing a generator-less class stalls with
+                  GeneratorNotConfigured.
                 properties:
                   failedWhen:
                     description: |-
@@ -436,7 +438,6 @@ spec:
                 pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
                 type: string
             required:
-            - generator
             - store
             type: object
         type: object

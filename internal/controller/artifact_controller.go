@@ -252,7 +252,9 @@ func (r *ArtifactReconciler) reconcile(ctx context.Context, obj *artifactsv1.Art
 	}
 
 	// DeleteAfter: one-shot GC of the store object, then park as Expired.
-	if da := obj.Spec.DeleteAfter; da != nil && da.Duration > 0 && age >= da.Duration {
+	// CRD validation rejects deleteAfter on observe-only Artifacts; the policy
+	// check here is defense in depth for objects admitted before the rule.
+	if da := obj.Spec.DeleteAfter; da != nil && da.Duration > 0 && age >= da.Duration && !obj.ObserveOnly() {
 		return r.reconcileExpired(ctx, obj, class, driver, key, specHash, now)
 	}
 
@@ -264,6 +266,9 @@ func (r *ArtifactReconciler) reconcile(ctx context.Context, obj *artifactsv1.Art
 
 	if obs.Exists {
 		return r.reconcileExisting(ctx, obj, class, obs, in, now)
+	}
+	if obj.ObserveOnly() {
+		return r.reconcileMissingObserved(ctx, obj, in)
 	}
 	return r.reconcileMissing(ctx, obj, class, in, now)
 }
@@ -293,7 +298,9 @@ func (r *ArtifactReconciler) reconcileExisting(ctx context.Context, obj *artifac
 	generatedSinceLastVerify := obj.Status.GeneratorSucceededAt != nil || obj.Status.GeneratorRef != nil
 	if obs.Digest != "" && obj.Status.Digest != "" && obs.Digest != obj.Status.Digest && !generatedSinceLastVerify {
 		r.recordDrift(obj, class, key, obj.Status.Digest, obs.Digest)
-		if class.DriftPolicy() == artifactsv1.DriftPolicyRegenerate {
+		// An observe-only Artifact reports the drift but never acts on it: for
+		// a sensor, a Regenerate class policy degrades to Warn.
+		if class.DriftPolicy() == artifactsv1.DriftPolicyRegenerate && !obj.ObserveOnly() {
 			// Treat as missing so the normal generator path restores it.
 			obj.Status.Digest = ""
 			return r.reconcileMissing(ctx, obj, class, in, now)
@@ -334,6 +341,32 @@ func (r *ArtifactReconciler) reconcileMissing(ctx context.Context, obj *artifact
 	conditions.MarkFalse(obj, artifactsv1.ArtifactInStoreCondition, artifactsv1.ReasonArtifactMissing,
 		"no artifact at %q", in.Key)
 	obj.Status.Digest = ""
+
+	// A class without a generator can only back observe-only Artifacts. A
+	// Full-policy Artifact pointed at one is a configuration error, surfaced
+	// as Stalled — but the store keeps being watched, so an externally
+	// produced object still clears it. Checked before the in-flight branch so
+	// a class edited to drop its generator mid-run stalls instead of
+	// dereferencing nil in evaluateRun.
+	if class.Spec.Generator == nil {
+		// A run left over from when the class still had a generator is
+		// cancelled and forgotten: without the class's expressions it can
+		// never be evaluated, and its progress deadline is gone with them —
+		// left alone it would leak until the Artifact itself is deleted, or
+		// worse, be judged later by expressions from a different template.
+		if ref := obj.Status.GeneratorRef; ref != nil {
+			r.deleteAbandonedRun(ctx, obj, ref, fmt.Sprintf("class %q no longer defines a generator", class.Name))
+			obj.Status.GeneratorRef = nil
+			obj.Status.GeneratorSucceededAt = nil
+			conditions.Delete(obj, artifactsv1.GeneratorSucceededCondition)
+		}
+		obj.Status.State = artifactsv1.StateDegraded
+		markStalled(obj, artifactsv1.ReasonGeneratorNotConfigured,
+			"class %q defines no generator; set managementPolicy: Observe to watch without generating", class.Name)
+		conditions.MarkFalse(obj, fluxmeta.ReadyCondition, artifactsv1.ReasonGeneratorNotConfigured,
+			"no artifact at %q and class %q defines no generator", in.Key, class.Name)
+		return ctrl.Result{RequeueAfter: jittered(obj.GetInterval())}, nil
+	}
 
 	maxAttempts, initialDelay, maxDelay := class.EffectiveBackoff()
 
@@ -610,6 +643,64 @@ func (r *ArtifactReconciler) recordAttemptFailure(obj *artifactsv1.Artifact, rea
 	return ctrl.Result{RequeueAfter: backoffDelay(obj.Status.FailedAttempts, initialDelay, maxDelay)}, nil
 }
 
+// reconcileMissingObserved is the missing-artifact path for observe-only
+// Artifacts: report absence and keep watching. Nothing is generated and
+// nothing is deleted from the store — Ready simply stays False until an
+// external producer fills the key.
+func (r *ArtifactReconciler) reconcileMissingObserved(ctx context.Context, obj *artifactsv1.Artifact, in generator.Input) (ctrl.Result, error) {
+	if conditions.IsTrue(obj, fluxmeta.ReadyCondition) {
+		r.Recorder.Eventf(obj, corev1.EventTypeWarning, "ArtifactMissing",
+			"artifact disappeared from store key %q; managementPolicy is Observe, not regenerating", in.Key)
+	}
+	// A run created before the policy flipped to Observe is cancelled: a
+	// sensor must not have this controller's machinery writing to its key.
+	if ref := obj.Status.GeneratorRef; ref != nil {
+		r.deleteAbandonedRun(ctx, obj, ref, "managementPolicy is Observe")
+	}
+	// Generator bookkeeping is meaningless for a sensor. Clearing the failure
+	// budget also means a later Observe→Full flip starts fresh instead of
+	// stalling on a budget exhausted in a previous life; status.attempts is
+	// deliberately kept — it is a lifetime counter that keeps run names from
+	// colliding with runs created before the flip.
+	obj.Status.GeneratorRef = nil
+	obj.Status.GeneratorSucceededAt = nil
+	obj.Status.FailedAttempts = 0
+	obj.Status.LastFailureTime = nil
+	obj.Status.LastFailureMessage = ""
+	conditions.Delete(obj, artifactsv1.GeneratorSucceededCondition)
+	obj.Status.Digest = ""
+	obj.Status.State = artifactsv1.StateMissing
+	// Neither Reconciling nor Stalled: nothing is in progress and nothing is
+	// wrong — the artifact is just not there yet, and producing it is
+	// somebody else's job.
+	conditions.Delete(obj, fluxmeta.ReconcilingCondition)
+	conditions.Delete(obj, fluxmeta.StalledCondition)
+	conditions.MarkFalse(obj, artifactsv1.ArtifactInStoreCondition, artifactsv1.ReasonArtifactMissing,
+		"no artifact at %q", in.Key)
+	conditions.MarkFalse(obj, fluxmeta.ReadyCondition, artifactsv1.ReasonArtifactMissing,
+		"no artifact at %q; waiting for an external producer (managementPolicy: Observe)", in.Key)
+	return ctrl.Result{RequeueAfter: jittered(obj.GetInterval())}, nil
+}
+
+// deleteAbandonedRun best-effort deletes an owned generator run the Artifact
+// can no longer make use of. On failure the run is only logged: the owner
+// reference still garbage-collects it when the Artifact goes away.
+func (r *ArtifactReconciler) deleteAbandonedRun(ctx context.Context, obj *artifactsv1.Artifact, ref *artifactsv1.GeneratorReference, why string) {
+	run := &unstructured.Unstructured{}
+	run.SetAPIVersion(ref.APIVersion)
+	run.SetKind(ref.Kind)
+	run.SetName(ref.Name)
+	run.SetNamespace(ref.Namespace)
+	err := r.Delete(ctx, run, client.PropagationPolicy(metav1.DeletePropagationBackground))
+	switch {
+	case err == nil:
+		r.Recorder.Eventf(obj, corev1.EventTypeNormal, "GeneratorRunCancelled",
+			"deleted generator run %s %q: %s", ref.Kind, ref.Name, why)
+	case !apierrors.IsNotFound(err):
+		logf.FromContext(ctx).Error(err, "deleting abandoned generator run", "run", ref.Name)
+	}
+}
+
 // reconcileExpired implements deleteAfter: delete the store object (if it is
 // ours), park the CR as Expired, and only wake up again for a pending ttl.
 func (r *ArtifactReconciler) reconcileExpired(ctx context.Context, obj *artifactsv1.Artifact, class *artifactsv1.ArtifactClass, driver store.Driver, key, specHash string, now time.Time) (ctrl.Result, error) {
@@ -657,7 +748,10 @@ func (r *ArtifactReconciler) reconcileDelete(ctx context.Context, obj *artifacts
 	if !controllerutil.ContainsFinalizer(obj, artifactsv1.ArtifactFinalizer) {
 		return ctrl.Result{}, nil
 	}
-	if obj.Spec.DeletionPolicy == artifactsv1.DeletionPolicyDelete && obj.Status.Key != "" {
+	// CRD validation rejects deletionPolicy Delete on observe-only Artifacts;
+	// the policy check here is defense in depth for objects admitted before
+	// the rule existed.
+	if obj.Spec.DeletionPolicy == artifactsv1.DeletionPolicyDelete && obj.Status.Key != "" && !obj.ObserveOnly() {
 		class := &artifactsv1.ArtifactClass{}
 		err := r.Get(ctx, types.NamespacedName{Name: obj.Spec.ClassRef.Name}, class)
 		switch {

@@ -113,6 +113,19 @@ spec:
                   Ready, and the general requeue cadence. Jittered by ±10%.
                 pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
                 type: string
+              managementPolicy:
+                default: Full
+                description: |-
+                  ManagementPolicy: Full (default) closes the loop — generate when
+                  missing, delete per deleteAfter/deletionPolicy. Observe watches without
+                  acting: a missing artifact means Ready=False until an external producer
+                  fills the key, drift is reported but never regenerated, and no store
+                  write ever happens. Deliberately mutable: flipping Observe to Full is
+                  the adoption path from watching an artifact to owning it.
+                enum:
+                - Full
+                - Observe
+                type: string
               params:
                 additionalProperties:
                   type: string
@@ -134,6 +147,15 @@ spec:
             - classRef
             - identity
             type: object
+            x-kubernetes-validations:
+            - message: managementPolicy Observe cannot be combined with deleteAfter,
+                which deletes from the store
+              rule: '!(has(self.managementPolicy) && self.managementPolicy == ''Observe''
+                && has(self.deleteAfter))'
+            - message: managementPolicy Observe cannot be combined with deletionPolicy
+                Delete, which deletes from the store
+              rule: '!(has(self.managementPolicy) && self.managementPolicy == ''Observe''
+                && has(self.deletionPolicy) && self.deletionPolicy == ''Delete'')'
           status:
             description: ArtifactStatus is the observed state.
             properties:

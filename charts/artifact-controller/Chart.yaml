@@ -11,8 +11,8 @@ type: application
 # the release workflow refuses to republish). ci/test.sh asserts version and
 # appVersion match the tag being released. When bumping, also refresh the
 # artifacthub.io/images tag and artifacthub.io/changes below.
-version: 0.8.2
-appVersion: "v0.8.2"
+version: 0.9.0
+appVersion: "v0.9.0"
 
 kubeVersion: ">=1.27.0-0"
 home: https://github.com/kargops/artifact-controller
@@ -44,7 +44,7 @@ annotations:
       url: https://github.com/kargops/artifact-controller/issues
   artifacthub.io/images: |
     - name: artifact-controller
-      image: ghcr.io/kargops/artifact-controller:v0.8.2
+      image: ghcr.io/kargops/artifact-controller:v0.9.0
       platforms:
         - linux/amd64
         - linux/arm64
@@ -107,11 +107,7 @@ annotations:
           demo: hello
         interval: 30s
   artifacthub.io/changes: |
-    - kind: security
-      description: image and chart are now signed keyless with cosign (Sigstore)
-    - kind: security
-      description: image carries an SPDX SBOM attestation; the SBOM is also a release asset
-    - kind: changed
-      description: CRDs are now installed and upgraded with the release (crds.install, default true) and carry helm.sh/resource-policy keep; set crds.install=false for out-of-band CRD management
     - kind: added
-      description: values.schema.json — helm validates values on install/upgrade, and typos in value names fail instead of being silently ignored
+      description: "observe-only mode: managementPolicy Observe verifies existence and tracks drift without ever generating or deleting (Artifact as a sensor)"
+    - kind: changed
+      description: ArtifactClass.spec.generator is now optional, so a class can back observe-only Artifacts with no generator at all

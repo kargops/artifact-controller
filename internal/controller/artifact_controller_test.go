@@ -33,7 +33,7 @@ func newClass(name string, maxAttempts int32, grace, backoff time.Duration) *art
 				KeyTemplate: "test/{{ .SpecHash }}",
 				Fake:        &artifactsv1.FakeStoreSpec{},
 			},
-			Generator: artifactsv1.GeneratorSpec{
+			Generator: &artifactsv1.GeneratorSpec{
 				Template:      runtime.RawExtension{Raw: []byte(cmTemplate)},
 				SucceededWhen: `'result' in object.data && object.data['result'] == 'ok'`,
 				FailedWhen:    `'result' in object.data && object.data['result'] == 'fail'`,
@@ -421,6 +421,181 @@ func TestDriftIsReportedButNotSelfInflicted(t *testing.T) {
 		// Warn is the default: the artifact is still usable.
 		g.Expect(a.Status.State).To(Equal(artifactsv1.StateReady))
 		g.Expect(a.Status.Digest).To(Equal("digest-two"))
+	}).Should(Succeed())
+}
+
+func observeOnly(a *artifactsv1.Artifact) {
+	a.Spec.ManagementPolicy = artifactsv1.ManagementPolicyObserve
+}
+
+// An observe-only Artifact is a sensor: absence is reported, not remediated,
+// and an external producer flips it Ready with no generator ever running.
+func TestObserveOnlyWatchesWithoutActing(t *testing.T) {
+	g := NewWithT(t)
+	class := newClass("watchtower", 3, 30*time.Second, time.Second)
+	class.Spec.Generator = nil // observe-only classes need no generator at all
+	g.Expect(k8sClient.Create(testCtx, class)).To(Succeed())
+	g.Expect(k8sClient.Create(testCtx, newArtifact("art12", "watchtower", observeOnly))).To(Succeed())
+
+	// Missing: Ready=False without Stalled — nothing is wrong, the artifact
+	// is just not there yet.
+	g.Eventually(func(g Gomega) {
+		a := getArtifact(g, "art12")
+		g.Expect(a.Status.State).To(Equal(artifactsv1.StateMissing))
+		g.Expect(condReason(a, fluxmeta.ReadyCondition)).To(Equal(artifactsv1.ReasonArtifactMissing))
+		g.Expect(apimeta.FindStatusCondition(a.Status.Conditions, fluxmeta.StalledCondition)).To(BeNil())
+	}).Should(Succeed())
+
+	// No generator run, ever.
+	g.Consistently(func(g Gomega) {
+		cm := &corev1.ConfigMap{}
+		err := k8sClient.Get(testCtx, types.NamespacedName{Namespace: testNS, Name: cmName("art12", "art12", 1)}, cm)
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		g.Expect(getArtifact(g, "art12").Status.Attempts).To(BeZero())
+	}).WithTimeout(2 * time.Second).Should(Succeed())
+
+	// An external producer fills the key: Ready.
+	fakeStore.Put(storeKey("art12"), "etag:external", stamped("art12"))
+	g.Eventually(func(g Gomega) {
+		a := getArtifact(g, "art12")
+		g.Expect(apimeta.IsStatusConditionTrue(a.Status.Conditions, fluxmeta.ReadyCondition)).To(BeTrue())
+		g.Expect(a.Status.Digest).To(Equal("etag:external"))
+	}).Should(Succeed())
+
+	// The object vanishes again: back to Missing, still no remediation.
+	g.Expect(fakeStore.Delete(testCtx, storeKey("art12"))).To(Succeed())
+	g.Eventually(func(g Gomega) {
+		g.Expect(getArtifact(g, "art12").Status.State).To(Equal(artifactsv1.StateMissing))
+	}).Should(Succeed())
+	g.Consistently(func(g Gomega) {
+		g.Expect(getArtifact(g, "art12").Status.Attempts).To(BeZero())
+	}).WithTimeout(time.Second).Should(Succeed())
+}
+
+// For a sensor, a Regenerate drift policy degrades to Warn: the drift is
+// reported, the new content becomes the baseline, and no generator runs even
+// though the class has one.
+func TestObserveOnlyDriftIsReportedNotRegenerated(t *testing.T) {
+	g := NewWithT(t)
+	class := newClass("regen-watch", 3, 30*time.Second, time.Second)
+	class.Spec.Drift = &artifactsv1.DriftSpec{Policy: artifactsv1.DriftPolicyRegenerate}
+	g.Expect(k8sClient.Create(testCtx, class)).To(Succeed())
+
+	fakeStore.Put(storeKey("art13"), "digest-one", stamped("art13"))
+	g.Expect(k8sClient.Create(testCtx, newArtifact("art13", "regen-watch", observeOnly))).To(Succeed())
+	g.Eventually(func(g Gomega) {
+		g.Expect(getArtifact(g, "art13").Status.Digest).To(Equal("digest-one"))
+	}).Should(Succeed())
+
+	fakeStore.Put(storeKey("art13"), "digest-two", stamped("art13"))
+	g.Eventually(func(g Gomega) {
+		a := getArtifact(g, "art13")
+		g.Expect(apimeta.IsStatusConditionTrue(a.Status.Conditions, artifactsv1.ArtifactDriftedCondition)).To(BeTrue())
+		g.Expect(a.Status.State).To(Equal(artifactsv1.StateReady))
+		g.Expect(a.Status.Digest).To(Equal("digest-two"))
+	}).Should(Succeed())
+
+	g.Consistently(func(g Gomega) {
+		cm := &corev1.ConfigMap{}
+		err := k8sClient.Get(testCtx, types.NamespacedName{Namespace: testNS, Name: cmName("art13", "art13", 1)}, cm)
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+	}).WithTimeout(2 * time.Second).Should(Succeed())
+}
+
+// The CRD refuses the combinations where an observe-only Artifact would carry
+// store-deleting semantics.
+func TestObserveOnlyRejectsStoreDeletingFields(t *testing.T) {
+	g := NewWithT(t)
+
+	err := k8sClient.Create(testCtx, newArtifact("art14", "happy", observeOnly, func(a *artifactsv1.Artifact) {
+		a.Spec.DeletionPolicy = artifactsv1.DeletionPolicyDelete
+	}))
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("deletionPolicy Delete"))
+
+	err = k8sClient.Create(testCtx, newArtifact("art14", "happy", observeOnly, func(a *artifactsv1.Artifact) {
+		a.Spec.DeleteAfter = &metav1.Duration{Duration: time.Hour}
+	}))
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("deleteAfter"))
+}
+
+// A Full-policy Artifact pointed at a generator-less class is a configuration
+// error, not a panic — and the store keeps being watched, so an external
+// producer still clears the stall.
+func TestFullPolicyWithGeneratorlessClassStalls(t *testing.T) {
+	g := NewWithT(t)
+	class := newClass("toothless", 3, 30*time.Second, time.Second)
+	class.Spec.Generator = nil
+	g.Expect(k8sClient.Create(testCtx, class)).To(Succeed())
+	g.Expect(k8sClient.Create(testCtx, newArtifact("art15", "toothless"))).To(Succeed())
+
+	g.Eventually(func(g Gomega) {
+		a := getArtifact(g, "art15")
+		g.Expect(condReason(a, fluxmeta.ReadyCondition)).To(Equal(artifactsv1.ReasonGeneratorNotConfigured))
+		g.Expect(apimeta.IsStatusConditionTrue(a.Status.Conditions, fluxmeta.StalledCondition)).To(BeTrue())
+		g.Expect(a.Status.Attempts).To(BeZero())
+	}).Should(Succeed())
+
+	fakeStore.Put(storeKey("art15"), "etag:rescued", stamped("art15"))
+	g.Eventually(func(g Gomega) {
+		a := getArtifact(g, "art15")
+		g.Expect(apimeta.IsStatusConditionTrue(a.Status.Conditions, fluxmeta.ReadyCondition)).To(BeTrue())
+		g.Expect(apimeta.FindStatusCondition(a.Status.Conditions, fluxmeta.StalledCondition)).To(BeNil())
+	}).Should(Succeed())
+}
+
+// managementPolicy is mutable by design (the adoption on-ramp), so both flip
+// directions must leave clean state: Full→Observe cancels an in-flight run
+// and forgets the generator bookkeeping; Observe→Full starts with a fresh
+// failure budget instead of one exhausted in a previous life.
+func TestManagementPolicyFlipCancelsRunAndResetsBudget(t *testing.T) {
+	g := NewWithT(t)
+	class := newClass("flippable", 3, 30*time.Second, time.Second)
+	g.Expect(k8sClient.Create(testCtx, class)).To(Succeed())
+	g.Expect(k8sClient.Create(testCtx, newArtifact("art16", "flippable"))).To(Succeed())
+
+	// Full: a run goes in flight and stays non-terminal.
+	run1 := cmName("art16", "art16", 1)
+	g.Eventually(func(g Gomega) {
+		cm := &corev1.ConfigMap{}
+		g.Expect(k8sClient.Get(testCtx, types.NamespacedName{Namespace: testNS, Name: run1}, cm)).To(Succeed())
+		g.Expect(getArtifact(g, "art16").Status.GeneratorRef).NotTo(BeNil())
+	}).Should(Succeed())
+
+	// Flip to Observe mid-run: the run is cancelled, the bookkeeping cleared.
+	g.Eventually(func(g Gomega) {
+		a := getArtifact(g, "art16")
+		a.Spec.ManagementPolicy = artifactsv1.ManagementPolicyObserve
+		g.Expect(k8sClient.Update(testCtx, a)).To(Succeed())
+	}).Should(Succeed())
+	g.Eventually(func(g Gomega) {
+		a := getArtifact(g, "art16")
+		g.Expect(a.Status.State).To(Equal(artifactsv1.StateMissing))
+		g.Expect(a.Status.GeneratorRef).To(BeNil())
+		g.Expect(a.Status.FailedAttempts).To(BeZero())
+		g.Expect(apimeta.FindStatusCondition(a.Status.Conditions, artifactsv1.GeneratorSucceededCondition)).To(BeNil())
+		cm := &corev1.ConfigMap{}
+		g.Expect(apierrors.IsNotFound(k8sClient.Get(testCtx, types.NamespacedName{Namespace: testNS, Name: run1}, cm))).To(BeTrue())
+	}).Should(Succeed())
+
+	// Flip back to Full: a fresh attempt starts (lifetime counter continues,
+	// so the new run does not collide with the cancelled one's name).
+	g.Eventually(func(g Gomega) {
+		a := getArtifact(g, "art16")
+		a.Spec.ManagementPolicy = artifactsv1.ManagementPolicyFull
+		g.Expect(k8sClient.Update(testCtx, a)).To(Succeed())
+	}).Should(Succeed())
+	run2 := cmName("art16", "art16", 2)
+	g.Eventually(func(g Gomega) {
+		cm := &corev1.ConfigMap{}
+		g.Expect(k8sClient.Get(testCtx, types.NamespacedName{Namespace: testNS, Name: run2}, cm)).To(Succeed())
+	}).Should(Succeed())
+
+	setCMResult(g, run2, "ok")
+	fakeStore.Put(storeKey("art16"), "etag:flipped", stamped("art16"))
+	g.Eventually(func(g Gomega) {
+		g.Expect(apimeta.IsStatusConditionTrue(getArtifact(g, "art16").Status.Conditions, fluxmeta.ReadyCondition)).To(BeTrue())
 	}).Should(Succeed())
 }
 

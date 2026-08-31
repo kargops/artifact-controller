@@ -114,7 +114,11 @@ func (in *ArtifactClassList) DeepCopyObject() runtime.Object {
 func (in *ArtifactClassSpec) DeepCopyInto(out *ArtifactClassSpec) {
 	*out = *in
 	in.Store.DeepCopyInto(&out.Store)
-	in.Generator.DeepCopyInto(&out.Generator)
+	if in.Generator != nil {
+		in, out := &in.Generator, &out.Generator
+		*out = new(GeneratorSpec)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.Backoff != nil {
 		in, out := &in.Backoff, &out.Backoff
 		*out = new(BackoffSpec)

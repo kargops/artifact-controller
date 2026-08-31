@@ -1,0 +1,29 @@
+# Observe-only: the Artifact is a sensor, not an actuator. The class needs no
+# generator at all — the controller verifies existence and tracks drift, but
+# never produces or deletes anything. Anything that can gate on conditions
+# (ArgoCD health, sync waves, a Job waiting on an upstream image) can now gate
+# on "this artifact exists in its store".
+apiVersion: artifacts.kargops.dev/v1alpha1
+kind: ArtifactClass
+metadata:
+  name: s3-release-evidence
+spec:
+  store:
+    driver: s3
+    keyTemplate: "releases/{{ .Identity.version }}/manifest.json"
+    s3:
+      bucket: release-evidence
+      region: eu-west-1
+---
+apiVersion: artifacts.kargops.dev/v1alpha1
+kind: Artifact
+metadata:
+  name: release-manifest-v42
+  namespace: default
+spec:
+  classRef:
+    name: s3-release-evidence
+  managementPolicy: Observe
+  identity:
+    version: "42.0.0"
+  interval: 5m

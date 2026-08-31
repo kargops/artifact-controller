@@ -31,6 +31,7 @@ const (
 	ReasonProgressDeadlineExceeded = "ProgressDeadlineExceeded"
 	ReasonFailureBudgetExhausted   = "FailureBudgetExhausted"
 	ReasonKeyConflict              = "KeyConflict"
+	ReasonGeneratorNotConfigured   = "GeneratorNotConfigured"
 	ReasonStoreUnavailable         = "StoreUnavailable"
 	ReasonClassNotFound            = "ClassNotFound"
 	ReasonTemplateError            = "TemplateError"
@@ -46,8 +47,11 @@ const (
 	StateGenerating       = "Generating"
 	StateAwaitingArtifact = "AwaitingArtifact"
 	StateReady            = "Ready"
-	StateDegraded         = "Degraded"
-	StateExpired          = "Expired"
-	StateSuspended        = "Suspended"
-	StateKeyConflict      = "KeyConflict"
+	// StateMissing is observe-only vocabulary: the artifact is absent and this
+	// controller is deliberately not the one who will produce it.
+	StateMissing     = "Missing"
+	StateDegraded    = "Degraded"
+	StateExpired     = "Expired"
+	StateSuspended   = "Suspended"
+	StateKeyConflict = "KeyConflict"
 )
