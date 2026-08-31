@@ -1,0 +1,17 @@
+{{- /*
+CRDs, emitted as regular resources so chart upgrades keep them current.
+.Files.Get returns raw bytes: the Go template syntax inside CRD descriptions
+({{ .SpecHash }} and friends) must never be rendered by Helm. The files carry
+helm.sh/resource-policy: keep (injected at sync time), so uninstall leaves
+them — and every Artifact — in place; removing them is a deliberate
+`kubectl delete crd`.
+
+Set crds.install=false when CRDs are managed out of band (the release's
+install.yaml, config/crd/bases/, or a GitOps source of their own).
+*/ -}}
+{{- if .Values.crds.install }}
+{{- range $path, $_ := .Files.Glob "crd-base/*.yaml" }}
+---
+{{ $.Files.Get $path }}
+{{- end }}
+{{- end }}

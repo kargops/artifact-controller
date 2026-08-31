@@ -30,6 +30,7 @@ jobs:
     permissions:
       contents: write # create the GitHub release
       packages: write # push image + chart to GHCR
+      id-token: write # OIDC token for cosign keyless signing
     env:
       IMG: ghcr.io/${{ github.repository_owner }}/artifact-controller
       CHART_OCI: oci://ghcr.io/${{ github.repository_owner }}/charts
@@ -40,6 +41,9 @@ jobs:
           go-version-file: go.mod
           cache: true
       - uses: azure/setup-helm@v5
+      - uses: sigstore/cosign-installer@v4
+      - uses: anchore/sbom-action/download-syft@v0
+        id: syft
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
         with:
@@ -83,6 +87,7 @@ jobs:
       # The Dockerfile cross-compiles via TARGETARCH from the build platform,
       # so no QEMU is needed for the multi-arch build.
       - uses: docker/build-push-action@v7
+        id: build
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -91,6 +96,38 @@ jobs:
             ${{ env.IMG }}:${{ github.ref_name }}
             ${{ env.IMG }}:latest
 
+      # Keyless: the signature binds this exact digest to this workflow's OIDC
+      # identity (repo, workflow path, tag). Signing the digest, never the tag
+      # — tags are mutable, digests are the artifact.
+      - name: Sign the image and attest its SBOMs
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          # The exact Fulcio identity this run signs with; anything looser
+          # would also match signatures minted by other workflows in the repo.
+          IDENTITY: https://github.com/${{ github.workflow_ref }}
+        run: |
+          cosign sign --yes "$IMG@$DIGEST"
+          mkdir -p dist
+          # syft inventories ONE platform per scan (amd64 by default), so a
+          # single SBOM on a multi-arch index would misdescribe arm64. One
+          # SBOM per platform, attested to that platform's manifest digest;
+          # the amd64 one is also attested to the index so verifying by tag
+          # resolves something.
+          for platform in linux/amd64 linux/arm64; do
+            arch="${platform#linux/}"
+            arch_digest=$(docker buildx imagetools inspect "$IMG@$DIGEST" --format '{{json .Manifest}}' \
+              | jq -r --arg p "$platform" \
+                '.manifests[] | select(.platform != null and (.platform.os + "/" + .platform.architecture) == $p) | .digest')
+            test -n "$arch_digest"
+            "${{ steps.syft.outputs.cmd }}" --platform "$platform" "$IMG@$DIGEST" -o spdx-json > "dist/sbom.$arch.spdx.json"
+            cosign attest --yes --type spdxjson --predicate "dist/sbom.$arch.spdx.json" "$IMG@$arch_digest"
+          done
+          cosign attest --yes --type spdxjson --predicate dist/sbom.amd64.spdx.json "$IMG@$DIGEST"
+          cosign verify "$IMG@$DIGEST" \
+            --certificate-identity "$IDENTITY" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null
+          echo "image signed, per-arch SBOMs attested, signature verified"
+
       - name: Package and push the chart
         if: steps.guard.outputs.push == 'true'
         run: |
@@ -98,10 +135,34 @@ jobs:
           helm package charts/artifact-controller -d dist/
           helm push "dist/artifact-controller-${GITHUB_REF_NAME#v}.tgz" "$CHART_OCI"
 
+      # Unconditional (not gated on the push step) so a job re-run signs a
+      # chart that was pushed by a previous partial attempt. Artifact Hub's
+      # tracker checks for a cosign signature on the chart reference to grant
+      # the signed badge.
+      - name: Sign the chart
+        env:
+          IDENTITY: https://github.com/${{ github.workflow_ref }}
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          out=$(helm pull "$CHART_OCI/artifact-controller" --version "$v" -d /tmp 2>&1)
+          digest=$(echo "$out" | awk '/Digest:/{print $2}')
+          test -n "$digest"
+          # Legacy signature format on purpose: Artifact Hub's tracker (and
+          # most Helm-ecosystem verifiers) look for the classic .sig tag, not
+          # cosign v3's OCI 1.1 referrer bundles.
+          cosign sign --yes --new-bundle-format=false \
+            "ghcr.io/${{ github.repository_owner }}/charts/artifact-controller@$digest"
+          cosign verify "ghcr.io/${{ github.repository_owner }}/charts/artifact-controller@$digest" \
+            --certificate-identity "$IDENTITY" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null
+          echo "chart signed and verified"
+
       - name: Render the install bundle pinned to this release
         run: |
           make release-manifest IMG="$IMG" VERSION="$GITHUB_REF_NAME"
+          make crds-manifest
           grep -q "image: $IMG:$GITHUB_REF_NAME" dist/install.yaml
+          grep -q "kind: CustomResourceDefinition" dist/crds.yaml
           echo "install bundle pinned to $IMG:$GITHUB_REF_NAME"
 
       - name: Create the GitHub release
@@ -121,12 +182,28 @@ jobs:
               kubectl apply --server-side -f \\
                 https://github.com/${{ github.repository }}/releases/download/$GITHUB_REF_NAME/install.yaml
 
+          CRDs alone (pairs with the chart's crds.install=false):
+
+              kubectl apply --server-side -f \\
+                https://github.com/${{ github.repository }}/releases/download/$GITHUB_REF_NAME/crds.yaml
+
           Then see the quickstart: docs/quickstart.md
+
+          ## Verify
+
+          Image and chart are signed keyless (Sigstore). The image signature
+          uses cosign v3's bundle format (OCI 1.1 referrers) — verifying it
+          requires cosign v3+. Per-architecture SPDX SBOMs are attested to
+          the image and attached below.
+
+              cosign verify ghcr.io/${{ github.repository }}:$GITHUB_REF_NAME \\
+                --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/release.yml@$GITHUB_REF" \\
+                --certificate-oidc-issuer https://token.actions.githubusercontent.com
           NOTES
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/install.yaml --clobber
+            gh release upload "$GITHUB_REF_NAME" dist/install.yaml dist/crds.yaml dist/sbom.amd64.spdx.json dist/sbom.arm64.spdx.json --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/install.yaml \
+            gh release create "$GITHUB_REF_NAME" dist/install.yaml dist/sbom.spdx.json \
               --title "artifact-controller $GITHUB_REF_NAME" \
               --notes-file /tmp/notes.md
           fi

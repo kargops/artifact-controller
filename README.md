@@ -259,6 +259,13 @@ kubectl apply --server-side -f \
 
 Kustomize users can consume `config/default` as a remote base instead.
 
+CRDs can be managed **decoupled from the chart** (cert-manager-style): set
+`crds.install=false` and apply them from any of the standalone routes — the
+per-release `crds.yaml` asset, `kubectl apply -f config/crd/bases/` from a
+checkout, or the kustomize base `config/crd` pinned to a tag. By default the
+chart installs and upgrades them, with `helm.sh/resource-policy: keep` so
+uninstall never deletes them (or the Artifacts they hold).
+
 Then grant the controller the generator engines your classes use. The chart
 does this via values (`generator.engines.batchJob` is on by default; Tekton
 and Argo Workflows are toggles). With the flat bundle, apply the matching
@@ -359,8 +366,10 @@ Releases are tag-driven (`.github/workflows/release.yml`):
 
 The workflow runs the gate, pushes the multi-arch image to
 `ghcr.io/kargops/artifact-controller`, pushes the chart to
-`oci://ghcr.io/kargops/charts`, renders `dist/install.yaml` pinned to that
-image, and creates a GitHub release carrying it. It **refuses to republish an
+`oci://ghcr.io/kargops/charts`, **signs both keyless with cosign and attaches
+an SPDX SBOM attestation to the image** (see SECURITY.md for verification),
+renders `dist/install.yaml` pinned to that image, and creates a GitHub
+release carrying the bundle and the SBOM. It **refuses to republish an
 existing chart version** — published versions are immutable.
 
 ### Artifact Hub

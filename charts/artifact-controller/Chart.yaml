@@ -11,8 +11,8 @@ type: application
 # the release workflow refuses to republish). ci/test.sh asserts version and
 # appVersion match the tag being released. When bumping, also refresh the
 # artifacthub.io/images tag and artifacthub.io/changes below.
-version: 0.8.1
-appVersion: "v0.8.1"
+version: 0.8.2
+appVersion: "v0.8.2"
 
 kubeVersion: ">=1.27.0-0"
 home: https://github.com/kargops/artifact-controller
@@ -44,7 +44,7 @@ annotations:
       url: https://github.com/kargops/artifact-controller/issues
   artifacthub.io/images: |
     - name: artifact-controller
-      image: ghcr.io/kargops/artifact-controller:v0.8.1
+      image: ghcr.io/kargops/artifact-controller:v0.8.2
       platforms:
         - linux/amd64
         - linux/arm64
@@ -107,7 +107,9 @@ annotations:
           demo: hello
         interval: 30s
   artifacthub.io/changes: |
-    - kind: added
-      description: Artifact Hub listing metadata (chart README, CRD cards, examples)
+    - kind: security
+      description: image and chart are now signed keyless with cosign (Sigstore)
+    - kind: security
+      description: image carries an SPDX SBOM attestation; the SBOM is also a release asset
     - kind: changed
-      description: chart is now published to ghcr.io/kargops/charts on every release tag
+      description: CRDs are now installed and upgraded with the release (crds.install, default true) and carry helm.sh/resource-policy keep; set crds.install=false for out-of-band CRD management

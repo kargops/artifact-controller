@@ -16,7 +16,7 @@ rule here was earned by a real incident, noted inline.
    by CEL validation; changing what identity *means* changes every key.
 3. **Generated files are tracked and must be regenerated, never edited:**
    `api/v1alpha1/zz_generated.deepcopy.go`, `config/crd/bases/*`,
-   `config/rbac/role.yaml`, `charts/artifact-controller/crds/*`,
+   `config/rbac/role.yaml`, `charts/artifact-controller/crd-base/*`,
    `charts/artifact-controller/templates/manager-clusterrole.yaml`.
    After touching `api/`, run `make manifests generate` and commit the result;
    `ci/test.sh` fails if you forget.

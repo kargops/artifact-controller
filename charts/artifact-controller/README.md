@@ -55,7 +55,11 @@ is a values change with no controller restart.
 
 ## Notes
 
-- CRDs live in the chart's `crds/` directory: Helm installs them but does not
-  upgrade them. On chart upgrades that change the API, apply the new CRDs
-  from the release's `install.yaml` (or `kubectl apply -f config/crd/bases/`).
+- **CRDs are installed and upgraded with the release** (`crds.install: true`,
+  the default) and carry `helm.sh/resource-policy: keep`, so `helm uninstall`
+  leaves them — and every Artifact object — in place. Set
+  `crds.install: false` to manage them out of band (the release's
+  `install.yaml`, `config/crd/bases/`, or their own GitOps source); also use
+  `false` if the CRDs already exist un-owned by this release, since Helm
+  refuses to adopt resources it did not create.
 - Published chart versions are immutable; the release workflow enforces it.

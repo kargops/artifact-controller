@@ -1,3 +1,12 @@
+crds:
+  # Install the CRDs with this release, so upgrades keep them current. They
+  # carry helm.sh/resource-policy: keep — uninstall leaves them (and every
+  # Artifact object) in place. Set false when CRDs are managed out of band:
+  # the release's install.yaml, config/crd/bases/, or their own GitOps source.
+  # If they already exist un-owned by this release (e.g. from install.yaml),
+  # keep this false or adopt them into the release first.
+  install: true
+
 image:
   repository: ghcr.io/kargops/artifact-controller
   # Empty means "use the chart's appVersion". Set it to a published tag
