@@ -1,0 +1,38 @@
+artifact-controller {{ .Chart.AppVersion }} installed as {{ .Release.Name }} in {{ .Release.Namespace }}.
+
+Image: {{ include "artifact-controller.image" . }}
+
+1. Attach cloud identity, or every store check fails with StoreUnavailable:
+
+     aws eks create-pod-identity-association \
+       --cluster-name <cluster> \
+       --namespace {{ .Release.Namespace }} \
+       --service-account {{ include "artifact-controller.serviceAccountName" . }} \
+       --role-arn arn:aws:iam::<account>:role/artifact-controller
+
+2. Generator engines enabled:
+{{- if .Values.generator.engines.batchJob }}
+     - batch/v1 Jobs
+{{- end }}
+{{- if .Values.generator.engines.tekton }}
+     - Tekton PipelineRuns
+{{- end }}
+{{- if .Values.generator.engines.argoWorkflows }}
+     - Argo Workflows
+{{- end }}
+{{- if not (or .Values.generator.engines.batchJob .Values.generator.engines.tekton .Values.generator.engines.argoWorkflows) }}
+     none — no class will be able to run a generator until you enable one
+     under generator.engines in values.
+{{- end }}
+
+3. Define an ArtifactClass, then declare Artifacts against it:
+
+     kubectl get artifactclasses
+     kubectl get artifacts -A
+
+{{- if .Values.controller.enableFakeStore }}
+
+WARNING: the in-memory fake store driver is enabled. It is for demos only —
+artifacts live in controller memory and nothing in this cluster can satisfy
+them.
+{{- end }}

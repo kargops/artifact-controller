@@ -1,0 +1,11 @@
+# Apply this to let classes use Tekton PipelineRuns as generators.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: artifact-controller-generator-tekton
+  labels:
+    artifacts.kargops.dev/aggregate-to-manager: "true"
+rules:
+  - apiGroups: ["tekton.dev"]
+    resources: ["pipelineruns", "taskruns"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]

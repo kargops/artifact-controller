@@ -1,0 +1,104 @@
+image:
+  repository: ghcr.io/kargops/artifact-controller
+  # Empty means "use the chart's appVersion". Set it to a published tag
+  # when deploying something other than the released version.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# Two replicas is active/passive, not scale-out: leader election means the
+# standby only reconciles after taking the lease. It buys failover, so keep it
+# paired with leaderElect below.
+replicaCount: 2
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+serviceAccount:
+  create: true
+  # Name and namespace are the attachment point for cloud identity: an EKS Pod
+  # Identity association or IRSA trust policy references them, so changing the
+  # name means re-pointing that association.
+  name: artifact-controller
+  # IRSA only. EKS Pod Identity needs no annotation — associate the role with
+  # (namespace, serviceAccountName) on the AWS side instead.
+  annotations: {}
+  #  eks.amazonaws.com/role-arn: arn:aws:iam::<account>:role/artifact-controller
+
+controller:
+  # Leader election lets you run more than one replica safely.
+  leaderElect: true
+  concurrentReconciles: 4
+  # In-memory store driver. Demos only: artifacts live in controller memory, so
+  # nothing in a real cluster can ever satisfy them.
+  enableFakeStore: false
+  logLevel: info
+  extraArgs: []
+
+metrics:
+  enabled: true
+  port: 8080
+
+# Everything about the runs the controller starts to produce artifacts.
+generator:
+  # Identity the runs execute as. Class templates reference this name, and
+  # cloud identity (EKS Pod Identity / IRSA) binds to it, so keep it stable.
+  # It is deliberately separate from the controller's account: the controller
+  # reads the store, runs write to it.
+  serviceAccount:
+    create: true
+    name: artifact-generator
+    # IRSA only; Pod Identity needs no annotation.
+    annotations: {}
+    #  eks.amazonaws.com/role-arn: arn:aws:iam::<account>:role/artifact-generator
+
+  # Engines the controller may drive. Each enabled entry renders a ClusterRole
+  # that aggregates into the manager's permissions, so the controller never
+  # needs wildcard cluster access.
+  engines:
+    batchJob: true
+    tekton: false
+    argoWorkflows: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Spread replicas across nodes so a single node loss cannot take both. Soft
+# (ScheduleAnyway) so a one-node cluster still schedules; set
+# whenUnsatisfiable: DoNotSchedule if you would rather block.
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: artifact-controller
+
+priorityClassName: ""
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Extra environment variables, e.g. AWS_REGION for the s3 driver.
+env: []

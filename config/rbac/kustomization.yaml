@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - service_account.yaml
+  - role.yaml
+  - aggregated_role.yaml
+  - role_binding.yaml
+  - leader_election_role.yaml
+  # Engine permissions are opt-in — uncomment the engines your classes use, or
+  # apply them separately at any time (they aggregate in without a redeploy).
+  # - generator-engines/batch-job.yaml
+  # - generator-engines/tekton.yaml
+  # - generator-engines/argo-workflows.yaml

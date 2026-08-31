@@ -1,0 +1,84 @@
+{{- $name := include "artifact-controller.fullname" . -}}
+{{- $sa := include "artifact-controller.serviceAccountName" . -}}
+# Aggregation target: rules arrive from any ClusterRole labelled
+# artifacts.kargops.dev/aggregate-to-manager, which is how the controller gets access
+# to generator run kinds without wildcard cluster permissions.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}-generators
+  labels:
+    {{- include "artifact-controller.labels" . | nindent 4 }}
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        artifacts.kargops.dev/aggregate-to-manager: "true"
+rules: []
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}-manager
+  labels:
+    {{- include "artifact-controller.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: artifact-controller-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}-generators
+  labels:
+    {{- include "artifact-controller.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}-generators
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "artifact-controller.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  # The http store driver reads credentials from secrets in THIS namespace
+  # only. Deliberately a Role, not a ClusterRole: ArtifactClass is
+  # cluster-scoped, so a cluster-wide grant would let anyone able to write a
+  # class read any secret in the cluster.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "artifact-controller.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}

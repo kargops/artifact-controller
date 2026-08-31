@@ -1,0 +1,6 @@
+.DS_Store
+.git/
+.gitignore
+*.tgz
+# Placeholder values used only by the CI validate job.
+ci-values.yaml

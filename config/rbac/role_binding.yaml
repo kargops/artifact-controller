@@ -1,0 +1,42 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: artifact-controller-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: artifact-controller-manager
+subjects:
+  - kind: ServiceAccount
+    name: artifact-controller
+    namespace: artifact-system
+---
+# Generator-engine permissions arrive through this aggregated role: applying
+# any ClusterRole labelled artifacts.kargops.dev/aggregate-to-manager=true grants the
+# controller access to that engine's kinds, with no redeploy.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: artifact-controller-generators
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: artifact-controller-generators
+subjects:
+  - kind: ServiceAccount
+    name: artifact-controller
+    namespace: artifact-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: artifact-controller-leader-election
+  namespace: artifact-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: artifact-controller-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: artifact-controller
+    namespace: artifact-system

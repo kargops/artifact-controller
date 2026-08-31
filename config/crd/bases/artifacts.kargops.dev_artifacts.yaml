@@ -1,0 +1,272 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: artifacts.artifacts.kargops.dev
+spec:
+  group: artifacts.kargops.dev
+  names:
+    kind: Artifact
+    listKind: ArtifactList
+    plural: artifacts
+    shortNames:
+    - art
+    singular: artifact
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.state
+      name: State
+      type: string
+    - jsonPath: .status.key
+      name: Key
+      priority: 1
+      type: string
+    - jsonPath: .status.failedAttempts
+      name: Failed
+      priority: 1
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Artifact declares an artifact that must exist in an external store, and how
+          to produce it if it does not.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              ArtifactSpec declares the intent: an artifact, uniquely identified by its
+              identity keys, that must exist in the class's external store.
+            properties:
+              classRef:
+                description: |-
+                  ClassRef names the cluster-scoped ArtifactClass that defines the store
+                  driver and the generator able to materialize this artifact.
+                properties:
+                  name:
+                    description: Name of the referent.
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: classRef is immutable
+                  rule: self == oldSelf
+              deleteAfter:
+                description: |-
+                  DeleteAfter: when the Artifact object is older than this, the artifact
+                  is deleted from its store (regardless of deletionPolicy) and the CR
+                  transitions to Expired; generators are no longer triggered. Unset means
+                  never.
+                pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
+                type: string
+              deletionPolicy:
+                default: Orphan
+                description: |-
+                  DeletionPolicy decides what happens to the store object when this CR is
+                  deleted. Defaults to Orphan (cache semantics: deleting the intent does
+                  not destroy the cache entry).
+                enum:
+                - Orphan
+                - Delete
+                type: string
+              identity:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Identity is the set of keys that uniquely identifies the desired
+                  artifact (e.g. source repo, git ref, platform, arch). The canonical
+                  hash of this map is the artifact's content address: it determines the
+                  store key and is the provenance stamp generators must apply.
+                maxProperties: 64
+                minProperties: 1
+                type: object
+                x-kubernetes-validations:
+                - message: identity is immutable
+                  rule: self == oldSelf
+              interval:
+                default: 1m
+                description: |-
+                  Interval is how often the store is re-verified once the artifact is
+                  Ready, and the general requeue cadence. Jittered by ±10%.
+                pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
+                type: string
+              params:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Params are additional non-identifying inputs passed to the generator
+                  template (e.g. runner sizing). They do not affect the spec hash.
+                type: object
+              suspend:
+                description: Suspend pauses reconciliation entirely.
+                type: boolean
+              ttl:
+                description: |-
+                  TTL: when the Artifact object is older than this, the controller stops
+                  reconciling and deletes the CR itself (the deletion policy then decides
+                  the store object's fate). Zero or unset means reconcile forever.
+                pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
+                type: string
+            required:
+            - classRef
+            - identity
+            type: object
+          status:
+            description: ArtifactStatus is the observed state.
+            properties:
+              attempts:
+                description: |-
+                  Attempts is the number of generator runs created over this Artifact's
+                  lifetime (drives deterministic run naming).
+                format: int32
+                type: integer
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              digest:
+                description: |-
+                  Digest is the store-reported version identifier of the observed object
+                  (driver-specific, e.g. "etag:..." or "sha256:...").
+                type: string
+              failedAttempts:
+                description: |-
+                  FailedAttempts is the consecutive failure count driving backoff and the
+                  failure budget. Reset on success or via the retry annotation.
+                format: int32
+                type: integer
+              generatorRef:
+                description: GeneratorRef points at the in-flight generator run, if
+                  any.
+                properties:
+                  apiVersion:
+                    type: string
+                  kind:
+                    type: string
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                type: object
+              generatorSucceededAt:
+                description: |-
+                  GeneratorSucceededAt is when the current run was first observed
+                  successful; starts the verification grace window.
+                format: date-time
+                type: string
+              key:
+                description: Key is the rendered store key the artifact is expected
+                  at.
+                type: string
+              lastFailureMessage:
+                type: string
+              lastFailureTime:
+                format: date-time
+                type: string
+              lastVerifiedTime:
+                description: |-
+                  LastVerifiedTime is when the artifact was last observed present and
+                  matching in the store.
+                format: date-time
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              retryToken:
+                description: RetryToken records the last honored artifacts.kargops.dev/retry
+                  annotation.
+                type: string
+              specHash:
+                description: |-
+                  SpecHash is the canonical sha256 of spec.identity — the artifact's
+                  content address and provenance stamp value.
+                type: string
+              state:
+                description: State is a display summary; conditions are the source
+                  of truth.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

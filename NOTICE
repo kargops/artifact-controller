@@ -1,0 +1,15 @@
+artifact-controller
+
+This project adapts design patterns, API conventions, and reconciler idioms
+from the following Apache-2.0 licensed projects:
+
+- fluxcd/source-controller and fluxcd/pkg (Copyright The Flux authors):
+  runtime conditions/patch machinery, kstatus-compatible condition taxonomy
+  (Ready/Reconciling/Stalled), interval/suspend API conventions, jittered
+  requeue convention.
+- cert-manager (Copyright The cert-manager Authors): the intent-object /
+  owned-attempt-object split, failure-budget backoff semantics, and the
+  retry-by-annotation escape hatch.
+- Crossplane (Copyright The Crossplane Authors): the external-store driver
+  contract shape (Observe/Delete) and deletion-policy vocabulary
+  (Orphan/Delete).

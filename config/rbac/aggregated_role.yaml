@@ -1,0 +1,13 @@
+# Empty by design: its rules are filled at runtime by every ClusterRole
+# labelled artifacts.kargops.dev/aggregate-to-manager=true. This is how the controller
+# gets permission on generator run kinds without ever needing cluster-wide
+# wildcard access.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: artifact-controller-generators
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        artifacts.kargops.dev/aggregate-to-manager: "true"
+rules: []

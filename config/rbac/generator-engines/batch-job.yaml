@@ -1,0 +1,11 @@
+# Apply this to let classes use batch/v1 Jobs as generators.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: artifact-controller-generator-batch
+  labels:
+    artifacts.kargops.dev/aggregate-to-manager: "true"
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]

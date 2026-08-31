@@ -1,0 +1,46 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: artifact-controller-manager
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - artifacts.kargops.dev
+  resources:
+  - artifactclasses
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - artifacts.kargops.dev
+  resources:
+  - artifacts
+  verbs:
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - artifacts.kargops.dev
+  resources:
+  - artifacts/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - artifacts.kargops.dev
+  resources:
+  - artifacts/status
+  verbs:
+  - get
+  - patch
+  - update

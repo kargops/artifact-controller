@@ -1,0 +1,46 @@
+{{- /*
+One ClusterRole per enabled engine. The label is what merges them into the
+controller's aggregated role, so enabling an engine later is a values change
+with no restart.
+*/ -}}
+{{- if .Values.generator.engines.batchJob }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "artifact-controller.fullname" . }}-generator-batch
+  labels:
+    artifacts.kargops.dev/aggregate-to-manager: "true"
+    {{- include "artifact-controller.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
+{{- end }}
+{{- if .Values.generator.engines.tekton }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "artifact-controller.fullname" . }}-generator-tekton
+  labels:
+    artifacts.kargops.dev/aggregate-to-manager: "true"
+    {{- include "artifact-controller.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["tekton.dev"]
+    resources: ["pipelineruns", "taskruns"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
+{{- end }}
+{{- if .Values.generator.engines.argoWorkflows }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "artifact-controller.fullname" . }}-generator-argo
+  labels:
+    artifacts.kargops.dev/aggregate-to-manager: "true"
+    {{- include "artifact-controller.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflows"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
+{{- end }}

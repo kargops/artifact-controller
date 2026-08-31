@@ -1,0 +1,36 @@
+# Values used only by the CI validate job (helm template --dry-run), to render
+# every optional path at once. Excluded from the packaged chart by .helmignore.
+image:
+  tag: ci-validation
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/artifact-controller
+
+generator:
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/artifact-generator
+  engines:
+    batchJob: true
+    tekton: true
+    argoWorkflows: true
+
+controller:
+  extraArgs:
+    - --zap-devel=false
+
+env:
+  - name: AWS_REGION
+    value: us-west-1
+
+podAnnotations:
+  example.com/annotation: "true"
+podLabels:
+  example.com/label: "true"
+nodeSelector:
+  kubernetes.io/os: linux
+tolerations:
+  - key: example
+    operator: Exists
+priorityClassName: system-cluster-critical

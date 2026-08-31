@@ -1,0 +1,11 @@
+# Apply this to let classes use Argo Workflows as generators.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: artifact-controller-generator-argo
+  labels:
+    artifacts.kargops.dev/aggregate-to-manager: "true"
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflows"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]

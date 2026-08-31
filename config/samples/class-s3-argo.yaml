@@ -1,0 +1,34 @@
+# The same idea with Argo Workflows as the generator engine: only the template
+# and the two CEL expressions change.
+apiVersion: artifacts.kargops.dev/v1alpha1
+kind: ArtifactClass
+metadata:
+  name: s3-game-clients-argo
+spec:
+  store:
+    driver: s3
+    keyTemplate: "clients/{{ .SpecHash }}.tar.gz"
+    s3:
+      bucket: game-clients
+      region: eu-west-1
+  generator:
+    template:
+      apiVersion: argoproj.io/v1alpha1
+      kind: Workflow
+      spec:
+        workflowTemplateRef:
+          name: build-game-client
+        arguments:
+          parameters:
+            - name: git-ref
+              value: "{{ .Identity.gitRef }}"
+            - name: platform
+              value: "{{ .Identity.platform }}"
+            - name: arch
+              value: "{{ .Identity.arch }}"
+            - name: s3-key
+              value: "{{ .Key }}"
+            - name: stamp
+              value: "{{ .SpecHash }}"
+    succeededWhen: "object.status.phase == 'Succeeded'"
+    failedWhen: "object.status.phase in ['Failed', 'Error']"

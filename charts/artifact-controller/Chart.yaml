@@ -1,0 +1,26 @@
+apiVersion: v2
+name: artifact-controller
+description: >-
+  Declare build artifacts (S3 objects, ECR images) as Kubernetes objects; the
+  controller generates them via your pipelines and continuously verifies they
+  still exist in their store.
+type: application
+
+# Chart version: bump on every release. The publish-chart-stable job runs on
+# tags, and ci/test.sh asserts these two match the tag being built.
+version: 0.8.0
+appVersion: "v0.8.0"
+
+kubeVersion: ">=1.27.0-0"
+home: https://github.com/kargops/artifact-controller
+sources:
+  - https://github.com/kargops/artifact-controller
+keywords:
+  - artifacts
+  - ci
+  - gitops
+  - s3
+  - ecr
+maintainers:
+  - name: Idan Cohen
+    email: idan.c@protonmail.com

@@ -1,0 +1,45 @@
+# A class of artifacts: game-client tarballs in S3, produced by a Tekton
+# pipeline. The pipeline receives the content-addressed key and the provenance
+# stamp as params — uploading to that key with that stamp is the generator
+# contract (see README).
+apiVersion: artifacts.kargops.dev/v1alpha1
+kind: ArtifactClass
+metadata:
+  name: s3-game-clients
+spec:
+  store:
+    driver: s3
+    keyTemplate: "clients/{{ .SpecHash }}.tar.gz"
+    s3:
+      bucket: game-clients
+      region: eu-west-1
+      stampMetadataKey: artifact-spec-hash
+  generator:
+    template:
+      apiVersion: tekton.dev/v1
+      kind: PipelineRun
+      spec:
+        pipelineRef:
+          name: build-game-client
+        params:
+          - name: source
+            value: "{{ .Identity.source }}"
+          - name: git-ref
+            value: "{{ .Identity.gitRef }}"
+          - name: platform
+            value: "{{ .Identity.platform }}"
+          - name: arch
+            value: "{{ .Identity.arch }}"
+          - name: s3-bucket
+            value: game-clients
+          - name: s3-key
+            value: "{{ .Key }}"
+          - name: stamp
+            value: "{{ .SpecHash }}"
+    succeededWhen: "status.conditions.exists(c, c.type == 'Succeeded' && c.status == 'True')"
+    failedWhen: "status.conditions.exists(c, c.type == 'Succeeded' && c.status == 'False')"
+  backoff:
+    maxAttempts: 5
+    initialDelay: 1m
+    maxDelay: 32m
+  verificationGracePeriod: 2m

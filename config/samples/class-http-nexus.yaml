@@ -1,0 +1,69 @@
+# A store the controller has no Go driver for. Everything specific to Nexus
+# lives here as configuration: how to ask whether an artifact exists, how to
+# read the answer, and how to authenticate.
+#
+# The same shape covers Artifactory, Harbor's API, an internal service — any
+# store that answers HTTP. Adding one costs a class, not a controller release.
+apiVersion: artifacts.kargops.dev/v1alpha1
+kind: ArtifactClass
+metadata:
+  name: nexus-tarballs
+spec:
+  store:
+    driver: http
+    keyTemplate: "{{ .SpecHex }}.tar.gz"
+    http:
+      observe:
+        method: GET
+        url: "https://nexus.internal/service/rest/v1/search/assets?repository=builds&name={{ .Key }}"
+        headers:
+          Accept: application/json
+      # Nexus answers 200 with an empty result set for a missing asset, so
+      # the status code alone would report everything as present.
+      exists: "code == 200 && json.items.size() > 0"
+      # The store's own checksum: this is what makes drift detectable, since
+      # the writer cannot forge it.
+      digest: "json.items[0].checksum.sha256"
+      # Provenance the generator attached when uploading.
+      stamp: "json.items[0].attributes.specHash"
+      delete:
+        method: DELETE
+        url: "https://nexus.internal/service/rest/v1/components/{{ .Key }}"
+      auth:
+        type: basic
+        # Read from the controller's own namespace only.
+        secretRef:
+          name: nexus-credentials
+      timeout: 20s
+
+  generator:
+    template:
+      apiVersion: batch/v1
+      kind: Job
+      spec:
+        backoffLimit: 0
+        template:
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: build
+                image: builder:latest
+                args:
+                  - --source={{ .Identity.repo }}
+                  - --ref={{ .Identity.gitRef }}
+                  - --upload-to=https://nexus.internal/repository/builds/{{ .Key }}
+                  # The generator contract: stamp what you upload.
+                  - --attribute=specHash={{ .SpecHash }}
+    succeededWhen: "status.conditions.exists(c, c.type == 'Complete' && c.status == 'True')"
+    failedWhen: "status.conditions.exists(c, c.type == 'Failed' && c.status == 'True')"
+    # Closes the vocabulary: a Job reporting none of these is Unrecognized
+    # rather than assumed healthy.
+    inProgressWhen: "has(status.active) && status.active > 0"
+    # Catches a run whose object looks alive while its pod is wedged.
+    progressDeadline: 20m
+
+  # The key addresses intent, not bytes, so the same key can hold different
+  # content over time. Warn reports a change nobody here caused and stays
+  # Ready; Regenerate would rebuild, which risks fighting whatever wrote it.
+  drift:
+    policy: Warn

@@ -1,0 +1,71 @@
+# Observe-only in spirit: an Entra ID (Azure AD) account declared as an
+# artifact, checked continuously through Microsoft Graph.
+#
+# READ THIS BEFORE USING IT FOR ACCOUNTS.
+#
+# The controller's premise is "missing → regenerate". For a build artifact that
+# is the whole value. For a user account, missing usually means somebody was
+# offboarded — and this would helpfully recreate them, minutes after IT deleted
+# the account, with the audit trail saying the controller did it.
+#
+# So: deletionPolicy Orphan, never deleteAfter, and offboarding must delete the
+# Artifact first. Until the observe-only mode lands (see the roadmap), treat
+# this sample as a demonstration of the auth flow rather than a pattern to
+# adopt for real accounts. Where the account is genuinely derivable and its
+# absence is genuinely damage — a break-glass service principal, say — it fits.
+apiVersion: artifacts.kargops.dev/v1alpha1
+kind: ArtifactClass
+metadata:
+  name: entra-service-accounts
+spec:
+  store:
+    driver: http
+    keyTemplate: "{{ .Identity.upn }}"
+    http:
+      observe:
+        method: GET
+        url: "https://graph.microsoft.com/v1.0/users/{{ .Key }}?$select=id,displayName,department,onPremisesExtensionAttributes"
+      exists: "code == 200"
+      # Graph has no digest of its own, so synthesise one from the fields that
+      # matter: this turns drift detection into "someone edited this account".
+      digest: "json.displayName + '|' + json.department"
+      # Provenance rides in an extension attribute, the same role an OCI
+      # annotation plays for images.
+      stamp: "json.onPremisesExtensionAttributes.extensionAttribute1"
+      auth:
+        type: clientCredentials
+        tokenURL: "https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token"
+        scopes: ["https://graph.microsoft.com/.default"]
+        # Keys default to clientId / clientSecret.
+        secretRef:
+          name: graph-app-credentials
+      timeout: 20s
+
+  generator:
+    template:
+      apiVersion: batch/v1
+      kind: Job
+      spec:
+        backoffLimit: 0
+        template:
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: create-user
+                image: provisioner:latest
+                args:
+                  - --upn={{ .Identity.upn }}
+                  - --display-name={{ .Identity.displayName }}
+                  - --department={{ .Identity.department }}
+                  # Must be check-then-create: a run that dies after Graph
+                  # created the account will be retried, and Graph answers a
+                  # second create with 409.
+                  - --stamp={{ .SpecHash }}
+    succeededWhen: "status.conditions.exists(c, c.type == 'Complete' && c.status == 'True')"
+    failedWhen: "status.conditions.exists(c, c.type == 'Failed' && c.status == 'True')"
+    inProgressWhen: "has(status.active) && status.active > 0"
+    progressDeadline: 10m
+
+  # Report edits made outside this system; never silently revert them.
+  drift:
+    policy: Warn

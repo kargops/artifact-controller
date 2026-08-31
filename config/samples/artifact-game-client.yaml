@@ -1,0 +1,20 @@
+# The intent: "this exact client build must exist in S3". If it does not, the
+# class's pipeline is triggered; once it exists, it is re-verified every 5m
+# and re-produced if it ever disappears. After 30 days the tarball is deleted
+# from S3 (deleteAfter); deleting this CR also deletes it (deletionPolicy).
+apiVersion: artifacts.kargops.dev/v1alpha1
+kind: Artifact
+metadata:
+  name: game-client-1-4-2-win-x86
+  namespace: builds
+spec:
+  classRef:
+    name: s3-game-clients
+  identity:
+    source: client-repo.git
+    gitRef: v1.4.2
+    platform: windows
+    arch: x86
+  interval: 5m
+  deleteAfter: 720h
+  deletionPolicy: Delete

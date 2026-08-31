@@ -1,0 +1,444 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: artifactclasses.artifacts.kargops.dev
+spec:
+  group: artifacts.kargops.dev
+  names:
+    kind: ArtifactClass
+    listKind: ArtifactClassList
+    plural: artifactclasses
+    shortNames:
+    - artclass
+    singular: artifactclass
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.store.driver
+      name: Driver
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: ArtifactClass defines how a family of artifacts is stored and
+          produced.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              ArtifactClassSpec defines store + generator for a family of artifacts,
+              mirroring the StorageClass/PVC split.
+            properties:
+              backoff:
+                description: BackoffSpec bounds re-triggering of failing generators.
+                properties:
+                  initialDelay:
+                    default: 30s
+                    pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
+                    type: string
+                  maxAttempts:
+                    default: 5
+                    description: |-
+                      MaxAttempts is the consecutive-failure budget; once exhausted the
+                      Artifact is marked Stalled (Degraded) until the retry annotation is
+                      set, the spec changes, or the artifact appears in the store.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  maxDelay:
+                    default: 32m
+                    pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
+                    type: string
+                type: object
+              drift:
+                description: |-
+                  Drift configures what happens when the content at the key changes
+                  without the controller having generated it. The key addresses the
+                  intent, not the bytes, so the same key can legitimately hold different
+                  content over time — this is what notices when that was not us.
+                properties:
+                  policy:
+                    default: Warn
+                    description: Policy on detecting content this controller did not
+                      generate.
+                    enum:
+                    - Warn
+                    - Ignore
+                    - Regenerate
+                    type: string
+                type: object
+              generator:
+                description: |-
+                  GeneratorSpec defines how to materialize artifacts of this class and how to
+                  interpret the generator's status, engine-agnostically via CEL.
+                properties:
+                  failedWhen:
+                    description: |-
+                      FailedWhen is the CEL expression that is true when the run failed
+                      terminally. Evaluation errors count as "not matched".
+                    type: string
+                  inProgressWhen:
+                    description: |-
+                      InProgressWhen closes the status vocabulary. Without it, anything that
+                      is neither succeeded nor failed is assumed to be progressing — so a run
+                      reporting a state the class never anticipated, or an expression that
+                      errors on every evaluation, is indistinguishable from a healthy build.
+                      Declare it and a run matching none of the three is reported as
+                      Unrecognized instead of being waited on.
+
+                      e.g. Job:    status.active > 0
+                           Argo:   status.phase in ['Pending', 'Running']
+                    type: string
+                  progressDeadline:
+                    description: |-
+                      ProgressDeadline bounds how long a single run may stay in progress (or
+                      unrecognized) before it is counted as a failed attempt. This is what
+                      catches a run whose object looks healthy while its execution is wedged
+                      — a pod stuck Pending on a missing secret leaves a Job at active:1 with
+                      no conditions, which is legitimately "in progress" to any status
+                      expression. Unset means only the engine's own timeout applies.
+                    pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
+                    type: string
+                  succeededWhen:
+                    description: |-
+                      SucceededWhen is a CEL expression over the generator object (variables:
+                      `object`, `status`) that is true when the run succeeded.
+                      e.g. Argo:   object.status.phase == 'Succeeded'
+                           Tekton: status.conditions.exists(c, c.type == 'Succeeded' && c.status == 'True')
+                    type: string
+                  template:
+                    description: |-
+                      Template is the full object to create per run (Argo Workflow, Tekton
+                      PipelineRun, batch/v1 Job, ...). Every string leaf may use Go template
+                      syntax with .Identity, .Params, .SpecHash, .Key, .Name, .Namespace,
+                      .Class and .Attempt. metadata.name/namespace and the controller owner
+                      reference are set by the controller.
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                required:
+                - failedWhen
+                - succeededWhen
+                - template
+                type: object
+              store:
+                description: StoreSpec selects and configures the store driver for
+                  a class.
+                properties:
+                  ami:
+                    description: |-
+                      AMIStoreSpec configures the ami driver. Credentials come from the default
+                      AWS chain (Pod Identity, IRSA, env), so no secret is referenced here.
+                    properties:
+                      deleteSnapshots:
+                        description: |-
+                          DeleteSnapshots also removes the EBS snapshots backing the image when an
+                          artifact is deleted. Off by default: deregistering an image is
+                          recoverable while its snapshots survive, and deleting them is not.
+                          Leaving it off means deleted artifacts leave snapshots behind, which
+                          cost money — pair it with a lifecycle process either way.
+                        type: boolean
+                      owner:
+                        description: |-
+                          Owner scopes the search. Defaults to "self"; set an account id to
+                          observe images shared from elsewhere.
+                        type: string
+                      region:
+                        type: string
+                      stampTagKey:
+                        default: artifact-spec-hash
+                        description: StampTagKey is the EC2 tag carrying the generator's
+                          provenance stamp.
+                        type: string
+                    type: object
+                  driver:
+                    description: |-
+                      Driver names the registered store driver: "s3" for S3-compatible object
+                      stores, "oci" for container registries. "fake" is an in-memory driver
+                      for tests and local demos — the controller only registers it when
+                      started with --enable-fake-store, and a class referencing an
+                      unregistered driver reports StoreUnavailable without running any
+                      generator.
+                    enum:
+                    - s3
+                    - oci
+                    - http
+                    - ami
+                    - artifactory
+                    - nexus
+                    - fake
+                    type: string
+                  fake:
+                    description: Fake is an in-memory driver for tests and demos.
+                    type: object
+                  http:
+                    description: |-
+                      HTTPStoreSpec configures the http driver: how to ask a store whether an
+                      artifact exists, and how to read the answer. Expressions are CEL over the
+                      response, with variables code (int), headers (lowercased map), body
+                      (truncated to 64KiB) and json (decoded body, empty when not JSON).
+                    properties:
+                      auth:
+                        description: |-
+                          HTTPAuthSpec selects an auth scheme and where its credentials live. The set
+                          is closed on purpose: schemes needing bespoke signing belong in a driver.
+                        properties:
+                          clientIDKey:
+                            type: string
+                          clientSecretKey:
+                            type: string
+                          headerName:
+                            description: HeaderName is the header set by the "header"
+                              scheme.
+                            type: string
+                          passwordKey:
+                            type: string
+                          region:
+                            description: |-
+                              Region and Service are required by "sigv4" and name what the signature
+                              is scoped to, e.g. region eu-central-1, service execute-api or s3.
+                            type: string
+                          scopes:
+                            description: Scopes requested with the token, e.g. https://graph.microsoft.com/.default
+                            items:
+                              type: string
+                            type: array
+                          secretRef:
+                            description: SecretRef names a secret in the controller's
+                              namespace.
+                            properties:
+                              name:
+                                description: Name of the referent.
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          service:
+                            type: string
+                          tokenKey:
+                            type: string
+                          tokenURL:
+                            description: TokenURL is the token endpoint for "clientCredentials".
+                            type: string
+                          type:
+                            default: none
+                            description: HTTPAuthType names a supported authentication
+                              scheme for the http driver.
+                            enum:
+                            - none
+                            - bearer
+                            - basic
+                            - header
+                            - sigv4
+                            - clientCredentials
+                            type: string
+                          usernameKey:
+                            type: string
+                        type: object
+                      delete:
+                        description: |-
+                          Delete is required only for classes using deleteAfter or
+                          deletionPolicy: Delete.
+                        properties:
+                          headers:
+                            additionalProperties:
+                              type: string
+                            type: object
+                          method:
+                            default: HEAD
+                            enum:
+                            - GET
+                            - HEAD
+                            - POST
+                            - DELETE
+                            type: string
+                          url:
+                            type: string
+                        required:
+                        - url
+                        type: object
+                      digest:
+                        description: |-
+                          Digest extracts the store's own content identifier, which is what makes
+                          drift detectable. Optional: a store without one simply cannot report
+                          content changes.
+                          e.g. "headers['etag']"
+                        type: string
+                      exists:
+                        description: |-
+                          Exists decides presence. Defaults to a 2xx response.
+                          e.g. "code == 200", or "code == 200 && json.assets.size() > 0"
+                        type: string
+                      observe:
+                        description: |-
+                          HTTPRequestSpec is one templated request. Only .Key is available: everything
+                          identity-derived is already folded into the key by keyTemplate.
+                        properties:
+                          headers:
+                            additionalProperties:
+                              type: string
+                            type: object
+                          method:
+                            default: HEAD
+                            enum:
+                            - GET
+                            - HEAD
+                            - POST
+                            - DELETE
+                            type: string
+                          url:
+                            type: string
+                        required:
+                        - url
+                        type: object
+                      stamp:
+                        description: |-
+                          Stamp extracts the provenance value the generator wrote.
+                          e.g. "headers['x-artifact-spec-hash']" or "json.metadata.specHash"
+                        type: string
+                      stampKey:
+                        description: |-
+                          StampKey names the metadata key the extracted stamp is published under;
+                          it must match what the class verifies against.
+                        type: string
+                      timeout:
+                        pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
+                        type: string
+                    required:
+                    - observe
+                    type: object
+                  keyTemplate:
+                    description: |-
+                      KeyTemplate renders the store key from the artifact. Available fields:
+                      .SpecHash, .SpecHex, .Identity, .Params, .Name, .Namespace, .Class.
+                      Defaults keep keys purely content-addressed: "{{ .SpecHash }}", except
+                      the oci driver which defaults to "{{ .SpecHex }}" because OCI tags may
+                      not contain ':'.
+                    type: string
+                  oci:
+                    description: |-
+                      OCIStoreSpec configures the oci driver for container registries (ECR,
+                      GHCR, Harbor, ...). Existence checks are HEAD-manifest only; artifact
+                      content is never pulled. ECR repositories authenticate via the default AWS
+                      chain (IRSA); other registries via the docker config keychain.
+                    properties:
+                      insecure:
+                        description: Insecure allows plain-HTTP registries (local
+                          dev registries).
+                        type: boolean
+                      repository:
+                        description: |-
+                          Repository is the full repository (registry/name) artifacts of this
+                          class live in, e.g.
+                          "123456789012.dkr.ecr.us-east-1.amazonaws.com/game-clients".
+                          The rendered store key is the TAG within this repository.
+                        type: string
+                      stampAnnotation:
+                        default: dev.artifacts.spec-hash
+                        description: |-
+                          StampAnnotation is the manifest annotation (or image config label)
+                          carrying the generator's provenance stamp.
+                        type: string
+                    required:
+                    - repository
+                    type: object
+                  repoManager:
+                    description: RepoManager configures the artifactory and nexus
+                      drivers.
+                    properties:
+                      baseURL:
+                        description: |-
+                          BaseURL is the service root, e.g. https://artifactory.internal/artifactory
+                          or https://nexus.internal.
+                        type: string
+                      repository:
+                        type: string
+                      secretRef:
+                        description: |-
+                          SecretRef names a secret in the controller's namespace. The scheme is
+                          chosen from the keys present: apiKey (Artifactory), token (bearer), or
+                          username plus password.
+                        properties:
+                          name:
+                            description: Name of the referent.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      stampPropertyKey:
+                        default: artifact-spec-hash
+                        description: |-
+                          StampPropertyKey is the Artifactory property carrying the provenance
+                          stamp. Nexus has no arbitrary asset metadata, so classes there rely on
+                          the key being content-addressed instead.
+                        type: string
+                      timeout:
+                        pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
+                        type: string
+                    required:
+                    - baseURL
+                    - repository
+                    type: object
+                  s3:
+                    description: |-
+                      S3StoreSpec configures the s3 driver. Credentials come from the default AWS
+                      chain (IRSA, env, shared config).
+                    properties:
+                      bucket:
+                        type: string
+                      endpoint:
+                        description: Endpoint overrides the S3 endpoint (MinIO, LocalStack).
+                        type: string
+                      region:
+                        type: string
+                      stampMetadataKey:
+                        default: artifact-spec-hash
+                        description: |-
+                          StampMetadataKey is the object metadata key holding the generator's
+                          provenance stamp (the artifact spec hash).
+                        type: string
+                      usePathStyle:
+                        type: boolean
+                    required:
+                    - bucket
+                    type: object
+                required:
+                - driver
+                type: object
+              verificationGracePeriod:
+                default: 2m
+                description: |-
+                  VerificationGracePeriod is how long after generator success the
+                  controller waits for the artifact to appear in the store before
+                  counting the run as failed (SucceededWithoutArtifact).
+                pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
+                type: string
+            required:
+            - generator
+            - store
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}
