@@ -599,6 +599,87 @@ func TestManagementPolicyFlipCancelsRunAndResetsBudget(t *testing.T) {
 	}).Should(Succeed())
 }
 
+// A Full→Observe flip must cancel an in-flight run even when the store key is
+// already filled — the exists-branch must not race the cancellation. The
+// suspend gate makes the ordering deterministic: the run goes in flight, the
+// store fills while reconciliation is parked, and the flip + unsuspend land
+// as one update.
+func TestObserveFlipCancelsRunEvenWhenStoreFilled(t *testing.T) {
+	g := NewWithT(t)
+	class := newClass("fillflip", 3, 30*time.Second, time.Second)
+	g.Expect(k8sClient.Create(testCtx, class)).To(Succeed())
+	g.Expect(k8sClient.Create(testCtx, newArtifact("art17", "fillflip"))).To(Succeed())
+
+	run1 := cmName("art17", "art17", 1)
+	g.Eventually(func(g Gomega) {
+		g.Expect(getArtifact(g, "art17").Status.GeneratorRef).NotTo(BeNil())
+	}).Should(Succeed())
+
+	g.Eventually(func(g Gomega) {
+		a := getArtifact(g, "art17")
+		a.Spec.Suspend = true
+		g.Expect(k8sClient.Update(testCtx, a)).To(Succeed())
+	}).Should(Succeed())
+	g.Eventually(func(g Gomega) {
+		g.Expect(getArtifact(g, "art17").Status.State).To(Equal(artifactsv1.StateSuspended))
+	}).Should(Succeed())
+
+	fakeStore.Put(storeKey("art17"), "etag:external-fill", stamped("art17"))
+	g.Eventually(func(g Gomega) {
+		a := getArtifact(g, "art17")
+		a.Spec.Suspend = false
+		a.Spec.ManagementPolicy = artifactsv1.ManagementPolicyObserve
+		g.Expect(k8sClient.Update(testCtx, a)).To(Succeed())
+	}).Should(Succeed())
+
+	g.Eventually(func(g Gomega) {
+		a := getArtifact(g, "art17")
+		g.Expect(apimeta.IsStatusConditionTrue(a.Status.Conditions, fluxmeta.ReadyCondition)).To(BeTrue())
+		g.Expect(a.Status.GeneratorRef).To(BeNil())
+		cm := &corev1.ConfigMap{}
+		g.Expect(apierrors.IsNotFound(k8sClient.Get(testCtx, types.NamespacedName{Namespace: testNS, Name: run1}, cm))).To(BeTrue())
+	}).Should(Succeed())
+}
+
+// Same flip, but the key holds a foreign object: the run must still be
+// cancelled before the key-conflict branch returns.
+func TestObserveFlipCancelsRunOnKeyConflict(t *testing.T) {
+	g := NewWithT(t)
+	class := newClass("conflictflip", 3, 30*time.Second, time.Second)
+	g.Expect(k8sClient.Create(testCtx, class)).To(Succeed())
+	g.Expect(k8sClient.Create(testCtx, newArtifact("art18", "conflictflip"))).To(Succeed())
+
+	run1 := cmName("art18", "art18", 1)
+	g.Eventually(func(g Gomega) {
+		g.Expect(getArtifact(g, "art18").Status.GeneratorRef).NotTo(BeNil())
+	}).Should(Succeed())
+
+	g.Eventually(func(g Gomega) {
+		a := getArtifact(g, "art18")
+		a.Spec.Suspend = true
+		g.Expect(k8sClient.Update(testCtx, a)).To(Succeed())
+	}).Should(Succeed())
+	g.Eventually(func(g Gomega) {
+		g.Expect(getArtifact(g, "art18").Status.State).To(Equal(artifactsv1.StateSuspended))
+	}).Should(Succeed())
+
+	fakeStore.Put(storeKey("art18"), "etag:foreign", map[string]string{artifactsv1.DefaultStampMetadataKey: "sha256:someoneelse"})
+	g.Eventually(func(g Gomega) {
+		a := getArtifact(g, "art18")
+		a.Spec.Suspend = false
+		a.Spec.ManagementPolicy = artifactsv1.ManagementPolicyObserve
+		g.Expect(k8sClient.Update(testCtx, a)).To(Succeed())
+	}).Should(Succeed())
+
+	g.Eventually(func(g Gomega) {
+		a := getArtifact(g, "art18")
+		g.Expect(a.Status.State).To(Equal(artifactsv1.StateKeyConflict))
+		g.Expect(a.Status.GeneratorRef).To(BeNil())
+		cm := &corev1.ConfigMap{}
+		g.Expect(apierrors.IsNotFound(k8sClient.Get(testCtx, types.NamespacedName{Namespace: testNS, Name: run1}, cm))).To(BeTrue())
+	}).Should(Succeed())
+}
+
 func TestDeleteAfterRemovesTheArtifactAndParksTheCR(t *testing.T) {
 	g := NewWithT(t)
 	fakeStore.Put(storeKey("art7"), "etag:seven", stamped("art7"))

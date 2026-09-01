@@ -11,8 +11,8 @@ type: application
 # the release workflow refuses to republish). ci/test.sh asserts version and
 # appVersion match the tag being released. When bumping, also refresh the
 # artifacthub.io/images tag and artifacthub.io/changes below.
-version: 0.9.0
-appVersion: "v0.9.0"
+version: 0.9.1
+appVersion: "v0.9.1"
 
 kubeVersion: ">=1.27.0-0"
 home: https://github.com/kargops/artifact-controller
@@ -44,7 +44,7 @@ annotations:
       url: https://github.com/kargops/artifact-controller/issues
   artifacthub.io/images: |
     - name: artifact-controller
-      image: ghcr.io/kargops/artifact-controller:v0.9.0
+      image: ghcr.io/kargops/artifact-controller:v0.9.1
       platforms:
         - linux/amd64
         - linux/arm64

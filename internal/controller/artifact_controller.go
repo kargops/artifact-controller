@@ -201,6 +201,21 @@ func (r *ArtifactReconciler) reconcile(ctx context.Context, obj *artifactsv1.Art
 		r.Recorder.Event(obj, corev1.EventTypeNormal, "RetryRequested", "failure budget reset via retry annotation")
 	}
 
+	// A policy flip to Observe cancels an in-flight run before anything else
+	// happens: a sensor must not have this controller's machinery writing to
+	// its key, and that holds regardless of what the store currently reports
+	// — or whether it, or the class, is reachable at all. The ref is cleared
+	// only once deletion is confirmed (or the run is already gone), so a
+	// failed cancellation is retried instead of orphaning a live run.
+	if obj.ObserveOnly() && obj.Status.GeneratorRef != nil {
+		if err := r.deleteAbandonedRun(ctx, obj, obj.Status.GeneratorRef, "managementPolicy is Observe"); err != nil {
+			return ctrl.Result{}, err
+		}
+		obj.Status.GeneratorRef = nil
+		obj.Status.GeneratorSucceededAt = nil
+		conditions.Delete(obj, artifactsv1.GeneratorSucceededCondition)
+	}
+
 	class := &artifactsv1.ArtifactClass{}
 	if err := r.Get(ctx, types.NamespacedName{Name: obj.Spec.ClassRef.Name}, class); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -355,7 +370,9 @@ func (r *ArtifactReconciler) reconcileMissing(ctx context.Context, obj *artifact
 		// left alone it would leak until the Artifact itself is deleted, or
 		// worse, be judged later by expressions from a different template.
 		if ref := obj.Status.GeneratorRef; ref != nil {
-			r.deleteAbandonedRun(ctx, obj, ref, fmt.Sprintf("class %q no longer defines a generator", class.Name))
+			if err := r.deleteAbandonedRun(ctx, obj, ref, fmt.Sprintf("class %q no longer defines a generator", class.Name)); err != nil {
+				return ctrl.Result{}, err
+			}
 			obj.Status.GeneratorRef = nil
 			obj.Status.GeneratorSucceededAt = nil
 			conditions.Delete(obj, artifactsv1.GeneratorSucceededCondition)
@@ -652,18 +669,12 @@ func (r *ArtifactReconciler) reconcileMissingObserved(ctx context.Context, obj *
 		r.Recorder.Eventf(obj, corev1.EventTypeWarning, "ArtifactMissing",
 			"artifact disappeared from store key %q; managementPolicy is Observe, not regenerating", in.Key)
 	}
-	// A run created before the policy flipped to Observe is cancelled: a
-	// sensor must not have this controller's machinery writing to its key.
-	if ref := obj.Status.GeneratorRef; ref != nil {
-		r.deleteAbandonedRun(ctx, obj, ref, "managementPolicy is Observe")
-	}
-	// Generator bookkeeping is meaningless for a sensor. Clearing the failure
-	// budget also means a later Observe→Full flip starts fresh instead of
-	// stalling on a budget exhausted in a previous life; status.attempts is
-	// deliberately kept — it is a lifetime counter that keeps run names from
-	// colliding with runs created before the flip.
-	obj.Status.GeneratorRef = nil
-	obj.Status.GeneratorSucceededAt = nil
+	// An in-flight run was already cancelled at the top of reconcile — before
+	// the store was consulted — so only the failure bookkeeping remains here.
+	// Clearing the failure budget means a later Observe→Full flip starts
+	// fresh instead of stalling on a budget exhausted in a previous life;
+	// status.attempts is deliberately kept — it is a lifetime counter that
+	// keeps run names from colliding with runs created before the flip.
 	obj.Status.FailedAttempts = 0
 	obj.Status.LastFailureTime = nil
 	obj.Status.LastFailureMessage = ""
@@ -682,10 +693,12 @@ func (r *ArtifactReconciler) reconcileMissingObserved(ctx context.Context, obj *
 	return ctrl.Result{RequeueAfter: jittered(obj.GetInterval())}, nil
 }
 
-// deleteAbandonedRun best-effort deletes an owned generator run the Artifact
-// can no longer make use of. On failure the run is only logged: the owner
-// reference still garbage-collects it when the Artifact goes away.
-func (r *ArtifactReconciler) deleteAbandonedRun(ctx context.Context, obj *artifactsv1.Artifact, ref *artifactsv1.GeneratorReference, why string) {
+// deleteAbandonedRun deletes an owned generator run the Artifact can no
+// longer make use of. A nil return means the run is confirmed gone (deleted
+// now, or already absent) — only then may the caller clear the generator
+// bookkeeping. Any other failure is returned so reconciliation retries the
+// cancellation instead of forgetting a still-running generator.
+func (r *ArtifactReconciler) deleteAbandonedRun(ctx context.Context, obj *artifactsv1.Artifact, ref *artifactsv1.GeneratorReference, why string) error {
 	run := &unstructured.Unstructured{}
 	run.SetAPIVersion(ref.APIVersion)
 	run.SetKind(ref.Kind)
@@ -697,8 +710,9 @@ func (r *ArtifactReconciler) deleteAbandonedRun(ctx context.Context, obj *artifa
 		r.Recorder.Eventf(obj, corev1.EventTypeNormal, "GeneratorRunCancelled",
 			"deleted generator run %s %q: %s", ref.Kind, ref.Name, why)
 	case !apierrors.IsNotFound(err):
-		logf.FromContext(ctx).Error(err, "deleting abandoned generator run", "run", ref.Name)
+		return fmt.Errorf("cancel generator run %s %q: %w", ref.Kind, ref.Name, err)
 	}
+	return nil
 }
 
 // reconcileExpired implements deleteAfter: delete the store object (if it is
