@@ -1,0 +1,45 @@
+# Label definitions. Sync after editing:
+#   while read -r name color desc; do gh label create "$name" --color "$color" --description "$desc" --force; done < <(yq -r '.[] | [.name, .color, .description] | @tsv' .github/labels.yml)
+# or by hand with `gh label create <name> --color <color> --description <desc> --force`.
+#
+# One label per relevant axis. Deliberately small: no stage/priority/risk axes
+# until there is a program to manage (see docs/agent-workflow.md).
+
+- name: type/bug
+  color: d73a4a
+  description: Something behaves incorrectly
+- name: type/feature
+  color: a2eeef
+  description: New behavior, driver, or API surface
+- name: type/docs
+  color: 0075ca
+  description: Documentation only
+- name: type/test
+  color: bfd4f2
+  description: Test coverage or test infrastructure
+
+- name: area/api
+  color: 5319e7
+  description: CRDs, spec fields, validation (api/v1alpha1)
+- name: area/controller
+  color: 1d76db
+  description: Reconcile behavior (internal/controller)
+- name: area/store
+  color: 0e8a16
+  description: Store drivers (internal/store)
+- name: area/generator
+  color: fbca04
+  description: Run templating and CEL interpretation (internal/generator)
+- name: area/chart
+  color: c2e0c6
+  description: Helm chart and packaging
+- name: area/docs
+  color: e4e669
+  description: README, quickstart, AGENTS.md
+
+- name: good first issue
+  color: 7057ff
+  description: Small, well-scoped, no invariant-sensitive surface
+- name: help wanted
+  color: 008672
+  description: Maintainer would welcome a PR for this

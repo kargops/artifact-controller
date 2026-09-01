@@ -1,0 +1,62 @@
+name: Bug report
+description: Something behaves incorrectly
+labels: ["type/bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks — a precise report is often the best first contribution to this
+        project. The status/conditions output usually contains the answer, so
+        please include it even when it looks unremarkable.
+  - type: dropdown
+    id: driver
+    attributes:
+      label: Store driver
+      options:
+        - s3
+        - oci
+        - artifactory
+        - nexus
+        - ami
+        - http
+        - fake
+        - not driver-related
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Controller version
+      description: Chart or image version (e.g. v0.9.1), or the commit if built from source.
+      placeholder: v0.9.1
+    validations:
+      required: true
+  - type: textarea
+    id: class
+    attributes:
+      label: ArtifactClass (sanitized)
+      description: The class involved, with credentials/URLs redacted as needed. Keep the store and generator blocks intact — most bugs live there.
+      render: yaml
+    validations:
+      required: true
+  - type: textarea
+    id: artifact
+    attributes:
+      label: Artifact and its observed status
+      description: "`kubectl get artifact <name> -o yaml` — spec AND status. The conditions and state are the controller's own account of what it did."
+      render: yaml
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs observed
+      description: What you expected to happen, what actually happened, and how to reproduce it.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Controller logs (optional)
+      description: Relevant lines from the controller pod, if you have them.
+      render: text
