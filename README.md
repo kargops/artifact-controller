@@ -462,9 +462,6 @@ Roadmap, roughly in order of value:
   results, Argo outputs, Flux `status.artifact.digest`) as *provenance*. Note
   it cannot replace the store digest for drift: a run object is ephemeral, so
   it can only ever be captured once, never re-observed.
-- **Observe-only Artifacts**, in the spirit of Crossplane's
-  `managementPolicies: [Observe]`: track and report on something another system
-  produces, never generate it.
 - Event-driven requeues (S3 EventBridge / ECR events), Prometheus metrics, and
   optionally emitting Flux `ExternalArtifact` objects (RFC-0012) so
   kustomize/helm controllers can consume generated manifests.

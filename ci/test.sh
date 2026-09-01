@@ -42,7 +42,7 @@ generated=(
   api/v1alpha1/zz_generated.deepcopy.go
   config/crd/bases
   config/rbac/role.yaml
-  charts/artifact-controller/crds
+  charts/artifact-controller/crd-base
   charts/artifact-controller/templates/manager-clusterrole.yaml
 )
 if ! git diff --exit-code -- "${generated[@]}"; then
