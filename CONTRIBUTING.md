@@ -11,6 +11,10 @@ testing rules, anti-patterns. It applies to humans exactly as much as to
 coding agents; every rule in it was earned by a real incident. Read it before
 a non-trivial change.
 
+Working with a coding agent (or as one)?
+[docs/agent-workflow.md](docs/agent-workflow.md) is the process contract:
+risk tiers, stop conditions, review and triage rules, and the merge gate.
+
 ## Developing
 
 Go (see `go.mod` for the version) and `make` are the only requirements; the

@@ -94,4 +94,10 @@ Do not:
 
 `./ci/test.sh` passes; generated files committed; chart version bumped if
 chart content changed; README updated if commands, drivers, or API surface
-changed (the driver table and lifecycle table go stale silently).
+changed — `ci/docs_test.go` fails the build on the pairs it can check (driver
+table, lifecycle table, auth list, state vocabulary, named paths, RBAC
+posture); judge the prose around them yourself.
+
+Process rules for agent-driven changes — risk tiers, stop conditions, bounded
+autofix, finding triage, the merge gate — live in
+[docs/agent-workflow.md](docs/agent-workflow.md).

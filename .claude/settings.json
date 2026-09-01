@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./ci/test.sh)",
+      "Bash(make test)",
+      "Bash(make manifests generate)",
+      "Bash(make helm-lint)",
+      "Bash(make build)",
+      "Bash(go test:*)",
+      "Bash(go vet:*)",
+      "Bash(go build:*)",
+      "Bash(gofmt:*)",
+      "Bash(go mod download)",
+      "Bash(go mod verify)",
+      "Bash(git diff --check)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.sh",
+            "timeout": 900
+          }
+        ]
+      }
+    ]
+  }
+}
