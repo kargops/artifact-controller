@@ -45,6 +45,12 @@ proposed next action.
 
 ## When complete
 
+Re-read the docs adjacent to your change for truthiness, not just accuracy:
+does any prose claim become false because of this change? Did you ship
+something the README roadmap still lists as future? Does an example still
+work if copy-pasted? `ci/docs_test.go` guards the mechanical doc/code pairs —
+the prose around them is on you.
+
 Inspect the full diff once more, commit with a conventional message whose body
 explains *why* (the git log is the design record), push, and open a **draft**
 PR with every section of the PR template filled — Validation with exact

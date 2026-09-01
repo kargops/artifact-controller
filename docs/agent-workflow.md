@@ -34,6 +34,16 @@ An implementing agent stops and reports — rather than keeps pushing — when:
 When stopping: state what the evidence now proves, what remains uncertain, and
 the proposed next action.
 
+## Docs truthiness
+
+Every change ends with a truthiness pass over the adjacent docs — distinct
+from updating them. Updating asks "does the doc describe my change?";
+truthiness asks "did my change make any existing sentence false?" — a shipped
+feature still on the roadmap, a removed flag still documented, an example
+that no longer copy-pastes. `ci/docs_test.go` fails the build on the
+mechanical doc/code pairs; the prose is the implementer's job and the
+reviewer's to spot-check.
+
 ## Review and bounded autofix
 
 Automatic autofix is bounded: **one** pass; a second pass only for a direct,

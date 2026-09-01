@@ -26,6 +26,7 @@ nothing to update" is the point. Details: AGENTS.md. -->
 - [ ] `Chart.yaml` `version` + `appVersion` bumped — or no chart content change
 - [ ] A regression test exists that fails without this change and passes with it — or this is docs/mechanical only
 - [ ] README driver table / lifecycle table / http-auth list checked against the change (tick when no update was needed too — `ci/docs_test.go` enforces the pairs it can)
+- [ ] Docs adjacent to the change re-read for truthiness: no prose claim made false, no shipped feature still listed on the roadmap, examples still copy-paste
 - [ ] No RBAC widened; no wildcard verbs/resources; secrets remain Role-scoped
 - [ ] The canonical identity hash (`internal/hash`) encoding untouched
 
