@@ -191,15 +191,15 @@ in the cluster — the driver's permission is a namespaced `Role`, never the
 | `verificationGracePeriod` | generator "succeeded" but store empty? | wait, then count as failed attempt (`SucceededWithoutArtifact`) |
 | `deleteAfter` | artifact GC | one-shot store deletion at age, CR parks as **Expired** |
 | `ttl` | intent GC | controller deletes the CR at age; finalizer applies `deletionPolicy` |
-| `deletionPolicy` | CR deleted → store object? | `Orphan` (default) or `Delete` (only if stamp matches) |
+| `deletionPolicy` | CR deleted → store object? | `Orphan` (default) or `Delete` (only if stamp matches); a refused store delete surfaces as a `DeletionBlocked` event + `Deleting=False` while the finalizer retries |
 | `drift.policy` | content changed and we didn't do it? | `Warn` (default), `Ignore`, or `Regenerate` |
 | `suspend` | pause everything | no observation, no runs |
 | `managementPolicy` | own it, or just watch it? | `Full` (default) or `Observe`: verify + drift only, never generate, never delete |
 
 Status follows kstatus conventions (`Ready` / `Reconciling` / `Stalled` from
-`fluxcd/pkg/apis/meta`) plus `ArtifactInStore`, `GeneratorSucceeded` and
-`ArtifactDrifted` conditions, and a `status.state` printer column
-(`Pending → Generating → AwaitingArtifact → Ready | Missing | Degraded | Expired | KeyConflict | Suspended`).
+`fluxcd/pkg/apis/meta`) plus `ArtifactInStore`, `GeneratorSucceeded`,
+`ArtifactDrifted` and `Deleting` conditions, and a `status.state` printer column
+(`Pending → Generating → AwaitingArtifact → Ready | Missing | Degraded | Expired | KeyConflict | Suspended | Deleting`).
 
 ### Drift
 
