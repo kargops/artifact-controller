@@ -32,9 +32,11 @@ rule here was earned by a real incident, noted inline.
    Also: duplicate YAML keys are *valid YAML* and pass `helm lint` while
    silently dropping the first value — `ci/chart_test.go` guards this; do not
    weaken it (it once ate the secrets RBAC rule).
-6. **Two identities, on purpose.** The controller ServiceAccount only *reads*
-   stores; generator runs use `artifact-generator`, which writes. Do not merge
-   them or widen the controller's cloud permissions past the README table.
+6. **Two identities, on purpose.** The controller ServiceAccount reads
+   stores (and, for promotion-enabled classes, copies within them — never
+   writes bytes of its own); generator runs use `artifact-generator`, which
+   writes. Do not merge them or widen the controller's cloud permissions past
+   the README table.
 7. **Secrets stay namespaced.** Store drivers resolve credentials only from
    the controller's own namespace. `ArtifactClass` is cluster-scoped, so a
    cluster-wide secrets grant would let anyone who can write a class read any

@@ -222,6 +222,13 @@ spec:
                   - type
                   type: object
                 type: array
+              contentDigest:
+                description: |-
+                  ContentDigest is the sha256 of the promoted object's content
+                  ("sha256:<hex>"), recorded when this controller promotes or adopts the
+                  object. Only set for promotion-enabled classes, which gate Ready on the
+                  store still agreeing with it.
+                type: string
               digest:
                 description: |-
                   Digest is the store-reported version identifier of the observed object

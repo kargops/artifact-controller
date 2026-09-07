@@ -73,6 +73,12 @@ func TestMain(m *testing.M) {
 	fakeStore = fake.New()
 	reg := store.NewRegistry()
 	fake.Register(reg, fakeStore)
+	// A driver without the Promoter capability, for promotion-unsupported
+	// coverage. "nexus" is borrowed because the CRD closes the driver enum;
+	// it is backed by the same in-memory store.
+	reg.Register("nexus", func(_ context.Context, _ *artifactsv1.ArtifactClass) (store.Driver, error) {
+		return observeDeleteOnly{inner: fakeStore}, nil
+	})
 	eval, err := generator.NewEvaluator()
 	die(err)
 

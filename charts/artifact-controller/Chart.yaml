@@ -11,8 +11,8 @@ type: application
 # the release workflow refuses to republish). ci/test.sh asserts version and
 # appVersion match the tag being released. When bumping, also refresh the
 # artifacthub.io/images tag and artifacthub.io/changes below.
-version: 0.9.1
-appVersion: "v0.9.1"
+version: 0.10.0
+appVersion: "v0.10.0"
 
 kubeVersion: ">=1.27.0-0"
 home: https://github.com/kargops/artifact-controller
@@ -44,7 +44,7 @@ annotations:
       url: https://github.com/kargops/artifact-controller/issues
   artifacthub.io/images: |
     - name: artifact-controller
-      image: ghcr.io/kargops/artifact-controller:v0.9.1
+      image: ghcr.io/kargops/artifact-controller:v0.10.0
       platforms:
         - linux/amd64
         - linux/arm64
@@ -108,6 +108,8 @@ annotations:
         interval: 30s
   artifacthub.io/changes: |
     - kind: added
-      description: "observe-only mode: managementPolicy Observe verifies existence and tracks drift without ever generating or deleting (Artifact as a sensor)"
+      description: "promotion (two-phase writes) for s3 classes: generators write only an incoming prefix; the controller verifies, stamps a content digest, and copies to the canonical key — readiness gates on promotion and content whose provenance is disproven is refused (ContentMismatch)"
+    - kind: added
+      description: generator templates can reference {{ .IncomingKey }}, the scratch key promotion classes upload to
     - kind: changed
-      description: ArtifactClass.spec.generator is now optional, so a class can back observe-only Artifacts with no generator at all
+      description: "the s3 driver requests checksums on HeadObject and surfaces the store-computed sha256 for content verification (recorded digests stay ETag-based; no drift churn on upgrade)"

@@ -39,6 +39,11 @@ content address:
   metadata `artifact-spec-hash`; OCI manifest annotation or image label
   `dev.kargops.artifacts.spec-hash`). A present-but-differently-stamped object is a
   `KeyConflict`: the controller will neither adopt nor overwrite nor delete it.
+- The spec hash stamps the *intent*, not the bytes. Classes that also need
+  the bytes verified enable [promotion](#promotion-two-phase-writes), where
+  the controller itself stamps a **content digest**
+  (`artifact-content-sha256`) and gates readiness on the store still agreeing
+  with it.
 - `spec.identity` and `spec.classRef` are **immutable** (CEL-validated):
   changing intent means creating a new Artifact.
 
@@ -128,7 +133,7 @@ Template fields: `.Identity`, `.Params`, `.SpecHash` (`sha256:<hex>`),
 
 | Driver | Backend | Existence check | Stamp location | Key default |
 |---|---|---|---|---|
-| `s3` | S3 / MinIO / LocalStack | `HeadObject` (no download) | object metadata `artifact-spec-hash` | `{{ .SpecHash }}` |
+| `s3` | S3 / MinIO / LocalStack | `HeadObject` (no download) | object metadata `artifact-spec-hash`, plus `artifact-content-sha256` on promotion classes | `{{ .SpecHash }}` |
 | `oci` | ECR / GHCR / Harbor / any registry | manifest `GET` (no layer pulls) | manifest annotation `dev.kargops.artifacts.spec-hash`, falling back to image config label | `{{ .SpecHex }}` |
 | `artifactory` | JFrog Artifactory | storage API, one call | artifact property `artifact-spec-hash` | `{{ .SpecHash }}` |
 | `nexus` | Sonatype Nexus | asset search | none — Nexus has no asset metadata, so the key carries provenance | `{{ .SpecHash }}` |
@@ -144,6 +149,75 @@ OCI tags may not contain `:`, which is why oci classes address by `.SpecHex`.
 Deletion removes the manifest by digest (on ECR this retires every tag on it),
 then best-effort removes the tag; registries that forbid tag deletion are
 tolerated.
+
+### Promotion (two-phase writes)
+
+In the direct-write model every generator identity holds write access to the
+canonical keys — so any of them can overwrite a stored artifact with different
+content and re-apply the spec-hash stamp, and verification (which stamps the
+*intent*, not the bytes) cannot tell. Dedup then serves the overwrite to every
+consumer, forever. Promotion closes this: generators write **only** to a
+scratch prefix, and the canonical key is written by the controller alone.
+
+```yaml
+spec:
+  store:
+    driver: s3
+    s3:
+      bucket: artifacts
+    promotion: {}               # presence enables; fields below are defaults
+    # promotion:
+    #   incomingPrefix: incoming/
+    #   contentDigestKey: artifact-content-sha256
+```
+
+The flow, per generated artifact:
+
+1. The generator uploads to `{{ .IncomingKey }}` (`incoming/<key>` by
+   default) and stamps the spec hash, exactly as it would have stamped the
+   canonical object. Promotion is strict where direct-write is lenient: an
+   unstamped or mis-stamped incoming object is refused
+   (`IncomingStampMismatch` counts as a failed attempt).
+2. The controller verifies the stamp, hashes the object, and server-side
+   copies it to the canonical key — pinned to the exact version it hashed, so
+   an object swapped mid-promotion fails the copy instead of inheriting the
+   verification. The promoted object carries two stamps: the spec hash and
+   `artifact-content-sha256` (the content digest), and the store records its
+   own checksum of the same bytes. The incoming object is deleted.
+3. Readiness gates on promotion: the canonical object must carry a content
+   digest that the store's own checksum does not contradict, and the digest
+   is recorded in `status.contentDigest`. A canonical object whose stamps are
+   disproven — the store computes different bytes than the stamp claims, or
+   the content stamp vanished after this controller promoted — parks the
+   Artifact at `KeyConflict` with reason `ContentMismatch`, and nothing is
+   adopted, overwritten, or rebuilt over the evidence.
+
+What this buys, stated honestly: an identity with write access to the
+incoming prefix can influence an artifact **while it is being built** — that
+window closes at promotion. It cannot touch a promoted artifact at all once
+IAM scopes it out of the canonical prefix, and a write that slips through
+anyway (a mis-scoped policy, a leaked broader credential) is detected rather
+than trusted. The enforcement boundary is IAM; the content digest is the
+tripwire behind it.
+
+Migration is class-by-class and needs no rebuilds: flipping `promotion` on a
+class whose artifacts already exist makes the controller **seal** each one on
+its next verification — hash it, stamp both digests in place, record the
+digest — trust-on-first-use for objects that predate the model. Migrating a
+class means (1) adding `promotion` to the store spec, (2) pointing the
+generator's upload at `{{ .IncomingKey }}`, and (3) tightening IAM: the
+generator role loses `s3:PutObject` on the canonical prefix and keeps it only
+under `incomingPrefix`; the controller role gains `s3:GetObject`/`s3:PutObject`
+on the bucket (the server-side copy authorizes as a read of the source plus a
+write of the destination) and `s3:DeleteObject` on the incoming prefix.
+
+Operational notes: pair `incomingPrefix` with a bucket lifecycle rule (failed
+runs leave scratch behind; promotion only cleans up on success). Promotion is
+one `CopyObject`, so objects over 5 GiB are not yet promotable. Observe-only
+Artifacts never write, so they never seal; on a promotion class they verify
+promoted stamps when present and fall back to direct-write verification
+otherwise. Supported by the `s3` driver (and `fake`); a class enabling
+promotion on any other driver stalls with `PromotionUnsupported`.
 
 ### The `http` driver
 
@@ -266,9 +340,12 @@ spec:
 
 A pipeline referenced by a class must:
 
-1. **Write to the key it is given** (`{{ .Key }}`).
+1. **Write to the key it is given** — `{{ .Key }}`, or `{{ .IncomingKey }}`
+   when the class enables [promotion](#promotion-two-phase-writes) (the
+   canonical key is then the controller's to write).
 2. **Stamp the object** with `{{ .SpecHash }}` (S3 object metadata / OCI
-   annotation or label).
+   annotation or label). Optional-but-recommended for direct-write classes;
+   mandatory for promotion classes.
 3. Report success/failure in its own status (interpreted by the class's CEL).
 
 Everything else — naming, ownership, retries, dedup — is the controller's job.
@@ -335,15 +412,16 @@ pods from both reconciling during a rolling update.
 ### AWS credentials
 
 The chart renders **two** ServiceAccounts, because the halves of the system
-want opposite permissions: `artifact-controller` only ever *reads* the store,
-while the generator runs it starts *write* to it. Splitting them means a bug in
-the reconcile loop cannot delete or overwrite an artifact, and a build cannot
-read the controller's identity.
+want opposite permissions: `artifact-controller` reads the store (plus, for
+promotion classes, copies within it — it never writes bytes of its own), while
+the generator runs it starts *write* to it. Splitting them means a bug in the
+reconcile loop cannot fabricate or overwrite an artifact with new content, and
+a build cannot read the controller's identity.
 
 | ServiceAccount | Needs |
 |---|---|
-| `artifact-controller` | read-only on the stores your classes observe |
-| `artifact-generator` | write access for the runs, referenced from class templates by `serviceAccountName` |
+| `artifact-controller` | read-only on the stores your classes observe; copy + scratch-delete where a class enables promotion |
+| `artifact-generator` | write access for the runs, referenced from class templates by `serviceAccountName` — scoped to the incoming prefix on promotion classes |
 
 Both names and the namespace are the attachment point for cloud identity, so
 keep them stable — an association binds to the exact pair, and a rename grants
@@ -370,7 +448,7 @@ The role needs, scoped to the buckets and repositories your classes reference:
 
 | Store | Actions |
 |---|---|
-| s3 | `s3:GetObject` (HeadObject is authorized as GetObject), `s3:DeleteObject` when any class uses `deleteAfter` or `deletionPolicy: Delete` |
+| s3 | `s3:GetObject` (HeadObject is authorized as GetObject), `s3:DeleteObject` when any class uses `deleteAfter` or `deletionPolicy: Delete`; promotion classes add `s3:PutObject` on the bucket (the promotion copy) and `s3:DeleteObject` on the incoming prefix (scratch cleanup) |
 | oci (ECR) | `ecr:GetAuthorizationToken` (resource `*`), `ecr:BatchGetImage`, `ecr:DescribeImages`, plus `ecr:BatchDeleteImage` for deletion |
 
 The generator's role is whatever its runs need to *write* — for ECR that is the

@@ -149,6 +149,13 @@ type ArtifactStatus struct {
 	// +optional
 	Digest string `json:"digest,omitempty"`
 
+	// ContentDigest is the sha256 of the promoted object's content
+	// ("sha256:<hex>"), recorded when this controller promotes or adopts the
+	// object. Only set for promotion-enabled classes, which gate Ready on the
+	// store still agreeing with it.
+	// +optional
+	ContentDigest string `json:"contentDigest,omitempty"`
+
 	// State is a display summary; conditions are the source of truth.
 	// +optional
 	State string `json:"state,omitempty"`

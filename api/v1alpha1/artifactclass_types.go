@@ -14,6 +14,14 @@ import (
 // artifact's spec hash to establish provenance.
 const DefaultStampMetadataKey = "artifact-spec-hash"
 
+// DefaultContentDigestKey is the store metadata key the controller stamps at
+// promotion time with the sha256 of the promoted object's content.
+const DefaultContentDigestKey = "artifact-content-sha256"
+
+// DefaultIncomingPrefix is where generators of promotion-enabled classes
+// write, relative to the canonical key.
+const DefaultIncomingPrefix = "incoming/"
+
 // StoreSpec selects and configures the store driver for a class.
 type StoreSpec struct {
 	// Driver names the registered store driver: "s3" for S3-compatible object
@@ -53,6 +61,41 @@ type StoreSpec struct {
 	// Fake is an in-memory driver for tests and demos.
 	// +optional
 	Fake *FakeStoreSpec `json:"fake,omitempty"`
+
+	// Promotion, when set, switches the class to the two-phase write model:
+	// generators write only under the incoming prefix, and the controller
+	// verifies the produced object, stamps a content digest alongside the
+	// spec-hash stamp, and copies it to the canonical key itself. Canonical
+	// keys then need write access for the controller's identity only, so an
+	// identity that can write the incoming prefix can influence an artifact
+	// only while it is being built — never overwrite a promoted one
+	// undetectably. Unset (the default) is the direct-write model: generators
+	// write the canonical key, and verification rests on the spec-hash stamp
+	// alone. Supported by the s3 driver (and fake, for tests); a class
+	// enabling it on any other driver stalls with PromotionUnsupported.
+	// +optional
+	Promotion *PromotionSpec `json:"promotion,omitempty"`
+}
+
+// PromotionSpec configures the two-phase write model. Its presence on a
+// StoreSpec enables promotion.
+type PromotionSpec struct {
+	// IncomingPrefix is prepended to the rendered key to form the incoming
+	// (scratch) key generators write to, exposed to generator templates as
+	// .IncomingKey. Scope generator write access to this prefix, and pair it
+	// with a store lifecycle rule: promotion deletes the incoming object on
+	// success, but failed runs leave scratch behind.
+	// +kubebuilder:default:="incoming/"
+	// +optional
+	IncomingPrefix string `json:"incomingPrefix,omitempty"`
+
+	// ContentDigestKey is the store metadata key the controller stamps at
+	// promotion time with the sha256 of the promoted object's content
+	// ("sha256:<hex>"). Verification then requires the store's own view of
+	// the content to keep matching this stamp.
+	// +kubebuilder:default:="artifact-content-sha256"
+	// +optional
+	ContentDigestKey string `json:"contentDigestKey,omitempty"`
 }
 
 // S3StoreSpec configures the s3 driver. Credentials come from the default AWS
@@ -109,9 +152,11 @@ type FakeStoreSpec struct{}
 type GeneratorSpec struct {
 	// Template is the full object to create per run (Argo Workflow, Tekton
 	// PipelineRun, batch/v1 Job, ...). Every string leaf may use Go template
-	// syntax with .Identity, .Params, .SpecHash, .Key, .Name, .Namespace,
-	// .Class and .Attempt. metadata.name/namespace and the controller owner
-	// reference are set by the controller.
+	// syntax with .Identity, .Params, .SpecHash, .Key, .IncomingKey, .Name,
+	// .Namespace, .Class and .Attempt. .IncomingKey is the scratch key
+	// promotion-enabled classes must upload to (empty otherwise).
+	// metadata.name/namespace and the controller owner reference are set by
+	// the controller.
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +required
 	Template runtime.RawExtension `json:"template"`
@@ -261,6 +306,34 @@ func (in *ArtifactClass) StampMetadataKey() string {
 		return DefaultOCIStampAnnotation
 	}
 	return DefaultStampMetadataKey
+}
+
+// PromotionEnabled reports whether this class uses the two-phase write model.
+func (in *ArtifactClass) PromotionEnabled() bool {
+	return in.Spec.Store.Promotion != nil
+}
+
+// IncomingKey returns the incoming (scratch) key for a rendered canonical
+// key, or "" when promotion is disabled.
+func (in *ArtifactClass) IncomingKey(key string) string {
+	p := in.Spec.Store.Promotion
+	if p == nil {
+		return ""
+	}
+	prefix := p.IncomingPrefix
+	if prefix == "" {
+		prefix = DefaultIncomingPrefix
+	}
+	return prefix + key
+}
+
+// ContentDigestKey returns the effective content-digest metadata key
+// (lowercased; drivers normalize metadata keys to lowercase).
+func (in *ArtifactClass) ContentDigestKey() string {
+	if p := in.Spec.Store.Promotion; p != nil && p.ContentDigestKey != "" {
+		return strings.ToLower(p.ContentDigestKey)
+	}
+	return DefaultContentDigestKey
 }
 
 // +kubebuilder:object:root=true
