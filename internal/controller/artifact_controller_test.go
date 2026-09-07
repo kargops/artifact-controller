@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	artifactsv1 "github.com/kargops/artifact-controller/api/v1alpha1"
 	"github.com/kargops/artifact-controller/internal/hash"
@@ -270,6 +272,65 @@ func TestDeletionPolicyDelete(t *testing.T) {
 		err := k8sClient.Get(testCtx, types.NamespacedName{Namespace: testNS, Name: "art5"}, &artifactsv1.Artifact{})
 		g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		obs, oerr := fakeStore.Observe(testCtx, storeKey("art5"))
+		g.Expect(oerr).NotTo(HaveOccurred())
+		g.Expect(obs.Exists).To(BeFalse())
+	}).Should(Succeed())
+}
+
+// A store that refuses the deletion policy (a controller stripped of
+// s3:DeleteObject sat exactly here) must not leave the Artifact silently
+// Terminating: the failure surfaces as a warning Event and on the object's
+// own status, and deletion completes once the store permits it.
+func TestDeletionBlockedByStoreIsSurfaced(t *testing.T) {
+	g := NewWithT(t)
+	fakeStore.Put(storeKey("art19"), "etag:blocked", stamped("art19"))
+	art := newArtifact("art19", "happy", func(a *artifactsv1.Artifact) {
+		a.Spec.DeletionPolicy = artifactsv1.DeletionPolicyDelete
+	})
+	g.Expect(k8sClient.Create(testCtx, art)).To(Succeed())
+	g.Eventually(func(g Gomega) {
+		g.Expect(apimeta.IsStatusConditionTrue(getArtifact(g, "art19").Status.Conditions, fluxmeta.ReadyCondition)).To(BeTrue())
+	}).Should(Succeed())
+
+	fakeStore.FailDeletes(errors.New("AccessDenied: not authorized to perform DeleteObject"))
+	defer fakeStore.FailDeletes(nil)
+	g.Expect(k8sClient.Delete(testCtx, art)).To(Succeed())
+
+	g.Eventually(func(g Gomega) {
+		a := getArtifact(g, "art19")
+		g.Expect(a.DeletionTimestamp.IsZero()).To(BeFalse())
+		g.Expect(a.Status.State).To(Equal(artifactsv1.StateDeleting))
+		c := apimeta.FindStatusCondition(a.Status.Conditions, artifactsv1.DeletingCondition)
+		g.Expect(c).NotTo(BeNil())
+		g.Expect(c.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(c.Reason).To(Equal(artifactsv1.ReasonStoreDeleteFailed))
+		g.Expect(c.Message).To(ContainSubstring("AccessDenied"))
+		g.Expect(condReason(a, fluxmeta.ReadyCondition)).To(Equal(artifactsv1.ReasonStoreDeleteFailed))
+
+		evs := &corev1.EventList{}
+		g.Expect(k8sClient.List(testCtx, evs, client.InNamespace(testNS))).To(Succeed())
+		found := false
+		for _, ev := range evs.Items {
+			if ev.InvolvedObject.Name == "art19" && ev.Reason == "DeletionBlocked" {
+				found = true
+				g.Expect(ev.Type).To(Equal(corev1.EventTypeWarning))
+				g.Expect(ev.Message).To(ContainSubstring("AccessDenied"))
+			}
+		}
+		g.Expect(found).To(BeTrue(), "no DeletionBlocked event recorded")
+	}).Should(Succeed())
+
+	// A refused delete must remove nothing.
+	obs, err := fakeStore.Observe(testCtx, storeKey("art19"))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(obs.Exists).To(BeTrue())
+
+	// Permission restored: the finalizer's retry completes the deletion.
+	fakeStore.FailDeletes(nil)
+	g.Eventually(func(g Gomega) {
+		gerr := k8sClient.Get(testCtx, types.NamespacedName{Namespace: testNS, Name: "art19"}, &artifactsv1.Artifact{})
+		g.Expect(apierrors.IsNotFound(gerr)).To(BeTrue())
+		obs, oerr := fakeStore.Observe(testCtx, storeKey("art19"))
 		g.Expect(oerr).NotTo(HaveOccurred())
 		g.Expect(obs.Exists).To(BeFalse())
 	}).Should(Succeed())

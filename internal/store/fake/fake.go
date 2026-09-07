@@ -17,8 +17,9 @@ type object struct {
 // Store is an in-memory store.Driver. One instance is shared across all
 // classes using the "fake" driver in a process.
 type Store struct {
-	mu      sync.RWMutex
-	objects map[string]object
+	mu        sync.RWMutex
+	objects   map[string]object
+	deleteErr error
 }
 
 func New() *Store {
@@ -49,8 +50,20 @@ func (s *Store) Observe(_ context.Context, key string) (store.Observation, error
 func (s *Store) Delete(_ context.Context, key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
 	delete(s.objects, key)
 	return nil
+}
+
+// FailDeletes makes every subsequent Delete return err until called again
+// with nil — how tests simulate a store refusing deletion (for example a
+// controller missing s3:DeleteObject).
+func (s *Store) FailDeletes(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deleteErr = err
 }
 
 // Put simulates a generator uploading an artifact.

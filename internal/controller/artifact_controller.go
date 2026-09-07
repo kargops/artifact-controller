@@ -788,6 +788,18 @@ func (r *ArtifactReconciler) reconcileDelete(ctx context.Context, obj *artifacts
 				stamp := obs.Metadata[class.StampMetadataKey()]
 				if stamp == "" || stamp == obj.Status.SpecHash {
 					if err := driver.Delete(ctx, obj.Status.Key); err != nil {
+						// A refused delete (revoked permission, retention
+						// policy) otherwise leaves the object Terminating
+						// with no signal beyond the controller log — say it
+						// on the object, where kubectl and metrics can see
+						// it, and let the returned error drive the retry.
+						obj.Status.State = artifactsv1.StateDeleting
+						conditions.MarkFalse(obj, artifactsv1.DeletingCondition, artifactsv1.ReasonStoreDeleteFailed,
+							"delete artifact at %q: %s", obj.Status.Key, err)
+						conditions.MarkFalse(obj, fluxmeta.ReadyCondition, artifactsv1.ReasonStoreDeleteFailed,
+							"deletionPolicy Delete is blocked: %s", err)
+						r.Recorder.Eventf(obj, corev1.EventTypeWarning, "DeletionBlocked",
+							"delete artifact at %q: %s", obj.Status.Key, err)
 						return ctrl.Result{}, err
 					}
 					r.Recorder.Eventf(obj, corev1.EventTypeNormal, "ArtifactDeleted",
@@ -811,6 +823,7 @@ func (r *ArtifactReconciler) patchOpts() []patch.Option {
 			fluxmeta.StalledCondition,
 			artifactsv1.ArtifactInStoreCondition,
 			artifactsv1.GeneratorSucceededCondition,
+			artifactsv1.DeletingCondition,
 		}},
 		patch.WithFieldOwner(r.FieldOwner),
 	}
