@@ -336,6 +336,68 @@ func TestDeletionBlockedByStoreIsSurfaced(t *testing.T) {
 	}).Should(Succeed())
 }
 
+// Store driver errors that embed a request URL (httpstore wraps method+URL)
+// must not leak userinfo or query tokens onto conditions or Events.
+func TestStoreErrorCredentialsAreStrippedFromStatusAndEvents(t *testing.T) {
+	g := NewWithT(t)
+	leak := errors.New("GET https://user:secret@host/path?token=abc: connection refused")
+
+	fakeStore.FailObserve(leak)
+	defer fakeStore.FailObserve(nil)
+	g.Expect(k8sClient.Create(testCtx, newArtifact("art20", "happy"))).To(Succeed())
+	g.Eventually(func(g Gomega) {
+		a := getArtifact(g, "art20")
+		g.Expect(condReason(a, fluxmeta.ReadyCondition)).To(Equal(artifactsv1.ReasonStoreUnavailable))
+		c := apimeta.FindStatusCondition(a.Status.Conditions, fluxmeta.ReadyCondition)
+		g.Expect(c).NotTo(BeNil())
+		g.Expect(c.Message).To(ContainSubstring("https://host/path"))
+		g.Expect(c.Message).NotTo(ContainSubstring("secret"))
+		g.Expect(c.Message).NotTo(ContainSubstring("token=abc"))
+		g.Expect(c.Message).NotTo(ContainSubstring("user:"))
+	}).Should(Succeed())
+	fakeStore.FailObserve(nil)
+
+	fakeStore.Put(storeKey("art21"), "etag:blocked", stamped("art21"))
+	art := newArtifact("art21", "happy", func(a *artifactsv1.Artifact) {
+		a.Spec.DeletionPolicy = artifactsv1.DeletionPolicyDelete
+	})
+	g.Expect(k8sClient.Create(testCtx, art)).To(Succeed())
+	g.Eventually(func(g Gomega) {
+		g.Expect(apimeta.IsStatusConditionTrue(getArtifact(g, "art21").Status.Conditions, fluxmeta.ReadyCondition)).To(BeTrue())
+	}).Should(Succeed())
+
+	fakeStore.FailDeletes(leak)
+	defer fakeStore.FailDeletes(nil)
+	g.Expect(k8sClient.Delete(testCtx, art)).To(Succeed())
+	g.Eventually(func(g Gomega) {
+		a := getArtifact(g, "art21")
+		g.Expect(a.Status.State).To(Equal(artifactsv1.StateDeleting))
+		c := apimeta.FindStatusCondition(a.Status.Conditions, artifactsv1.DeletingCondition)
+		g.Expect(c).NotTo(BeNil())
+		g.Expect(c.Message).To(ContainSubstring("https://host/path"))
+		g.Expect(c.Message).NotTo(ContainSubstring("secret"))
+		g.Expect(c.Message).NotTo(ContainSubstring("token=abc"))
+		ready := apimeta.FindStatusCondition(a.Status.Conditions, fluxmeta.ReadyCondition)
+		g.Expect(ready).NotTo(BeNil())
+		g.Expect(ready.Message).NotTo(ContainSubstring("secret"))
+		g.Expect(ready.Message).NotTo(ContainSubstring("token=abc"))
+
+		evs := &corev1.EventList{}
+		g.Expect(k8sClient.List(testCtx, evs, client.InNamespace(testNS))).To(Succeed())
+		found := false
+		for _, ev := range evs.Items {
+			if ev.InvolvedObject.Name == "art21" && ev.Reason == "DeletionBlocked" {
+				found = true
+				g.Expect(ev.Message).To(ContainSubstring("https://host/path"))
+				g.Expect(ev.Message).NotTo(ContainSubstring("secret"))
+				g.Expect(ev.Message).NotTo(ContainSubstring("token=abc"))
+			}
+		}
+		g.Expect(found).To(BeTrue(), "no DeletionBlocked event recorded")
+	}).Should(Succeed())
+	fakeStore.FailDeletes(nil)
+}
+
 func TestTTLDeletesTheCRAndOrphansTheArtifact(t *testing.T) {
 	g := NewWithT(t)
 	fakeStore.Put(storeKey("art6"), "etag:six", stamped("art6"))

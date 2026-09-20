@@ -17,9 +17,10 @@ type object struct {
 // Store is an in-memory store.Driver. One instance is shared across all
 // classes using the "fake" driver in a process.
 type Store struct {
-	mu        sync.RWMutex
-	objects   map[string]object
-	deleteErr error
+	mu         sync.RWMutex
+	objects    map[string]object
+	deleteErr  error
+	observeErr error
 }
 
 func New() *Store {
@@ -36,6 +37,9 @@ func Register(reg *store.Registry, s *Store) {
 func (s *Store) Observe(_ context.Context, key string) (store.Observation, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.observeErr != nil {
+		return store.Observation{}, s.observeErr
+	}
 	o, ok := s.objects[key]
 	if !ok {
 		return store.Observation{}, nil
@@ -64,6 +68,14 @@ func (s *Store) FailDeletes(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.deleteErr = err
+}
+
+// FailObserve makes every subsequent Observe return err until called again
+// with nil — how tests inject a driver error that still contains a request URL.
+func (s *Store) FailObserve(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.observeErr = err
 }
 
 // Put simulates a generator uploading an artifact.
