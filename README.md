@@ -332,6 +332,32 @@ interval.
 Leader election matters even at one replica: it is what stops the old and new
 pods from both reconciling during a rolling update.
 
+### Metrics
+
+The chart binds controller-runtime metrics on `:8080` by default
+(`metrics.enabled` / `metrics.port`) and renders a ClusterIP Service named
+`<release>-artifact-controller-metrics` targeting that port, so in-cluster
+scrapers have a stable DNS name. The endpoint is **plain HTTP with no
+authn/authz** — anything that can reach the Service (or the pod IP) can read
+`/metrics`. Set `metrics.enabled: false` to bind nothing and omit the
+Service.
+
+A prometheus-operator `ServiceMonitor` is **off by default** so the chart does
+not require that CRD. Turn it on when the operator is installed:
+
+```yaml
+metrics:
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    labels:
+      release: kube-prometheus-stack   # match your Prometheus selector
+```
+
+Without a ServiceMonitor, scrape the Service directly, for example with a
+Prometheus `kubernetes_sd_configs` role of `endpoints` selecting
+`app.kubernetes.io/component: metrics`.
+
 ### AWS credentials
 
 The chart renders **two** ServiceAccounts, because the halves of the system

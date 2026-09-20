@@ -35,7 +35,8 @@ wildcard permissions** — generator-engine access is opt-in per engine.
 | `generator.engines.argoWorkflows` | `false` | allow Argo Workflows |
 | `controller.concurrentReconciles` | `4` | parallelism across Artifacts |
 | `controller.enableFakeStore` | `false` | in-memory driver, demos only |
-| `metrics.enabled` / `metrics.port` | `true` / `8080` | metrics endpoint |
+| `metrics.enabled` / `metrics.port` | `true` / `8080` | metrics endpoint (plain HTTP, no auth). Renders a ClusterIP Service for scrape discovery |
+| `metrics.serviceMonitor.enabled` | `false` | prometheus-operator ServiceMonitor; default off so the chart does not require the CRD |
 | `env` | `[]` | e.g. `AWS_REGION` when the store's region differs from the cluster's |
 
 Engine toggles render aggregation-labelled ClusterRoles
