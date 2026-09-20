@@ -19,6 +19,7 @@ import (
 	artifactsv1 "github.com/kargops/artifact-controller/api/v1alpha1"
 	"github.com/kargops/artifact-controller/internal/controller"
 	"github.com/kargops/artifact-controller/internal/generator"
+	acmetrics "github.com/kargops/artifact-controller/internal/metrics"
 	"github.com/kargops/artifact-controller/internal/store"
 	"github.com/kargops/artifact-controller/internal/store/ami"
 	"github.com/kargops/artifact-controller/internal/store/fake"
@@ -114,6 +115,7 @@ func main() {
 		Recorder:                mgr.GetEventRecorderFor("artifact-controller"),
 		FieldOwner:              "artifact-controller",
 		MaxConcurrentReconciles: concurrent,
+		Metrics:                 acmetrics.Default(),
 	}
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "setup reconciler")
