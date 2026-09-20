@@ -41,6 +41,7 @@ import (
 	artifactsv1 "github.com/kargops/artifact-controller/api/v1alpha1"
 	"github.com/kargops/artifact-controller/internal/generator"
 	"github.com/kargops/artifact-controller/internal/hash"
+	"github.com/kargops/artifact-controller/internal/metrics"
 	"github.com/kargops/artifact-controller/internal/store"
 )
 
@@ -66,6 +67,8 @@ type ArtifactReconciler struct {
 	Recorder                record.EventRecorder
 	FieldOwner              string
 	MaxConcurrentReconciles int
+	// Metrics is optional; a nil value records nothing.
+	Metrics *metrics.Collectors
 
 	// Now is injectable for tests; defaults to time.Now.
 	Now func() time.Time
@@ -144,6 +147,14 @@ func (r *ArtifactReconciler) ensureGeneratorWatch(gvk schema.GroupVersionKind) e
 		r.watched.Delete(gvk)
 	}
 	return err
+}
+
+func (r *ArtifactReconciler) driverFor(ctx context.Context, class *artifactsv1.ArtifactClass) (store.Driver, error) {
+	d, err := r.Registry.DriverFor(ctx, class)
+	if err != nil {
+		return nil, err
+	}
+	return r.Metrics.Instrument(d, class.Spec.Store.Driver), nil
 }
 
 // Reconcile implements the state machine.
@@ -260,7 +271,7 @@ func (r *ArtifactReconciler) reconcile(ctx context.Context, obj *artifactsv1.Art
 		return ctrl.Result{}, nil
 	}
 
-	driver, err := r.Registry.DriverFor(ctx, class)
+	driver, err := r.driverFor(ctx, class)
 	if err != nil {
 		conditions.MarkFalse(obj, fluxmeta.ReadyCondition, artifactsv1.ReasonStoreUnavailable, "%s", err)
 		return ctrl.Result{RequeueAfter: time.Minute}, nil
@@ -301,6 +312,7 @@ func (r *ArtifactReconciler) reconcileExisting(ctx context.Context, obj *artifac
 			"store object at %q carries provenance stamp %s, expected %s; refusing to adopt or overwrite", key, stamp, specHash)
 		r.Recorder.Eventf(obj, corev1.EventTypeWarning, "KeyConflict",
 			"foreign object at store key %q (stamp %s)", key, stamp)
+		r.Metrics.RecordVerification(metrics.VerifyKeyConflict)
 		return ctrl.Result{RequeueAfter: jittered(obj.GetInterval())}, nil
 	}
 
@@ -344,6 +356,7 @@ func (r *ArtifactReconciler) reconcileExisting(ctx context.Context, obj *artifac
 		r.Recorder.Eventf(obj, corev1.EventTypeNormal, "ArtifactAvailable",
 			"artifact observed at %q (%s)", key, obs.Digest)
 	}
+	r.Metrics.RecordVerification(metrics.VerifyOK)
 	return ctrl.Result{RequeueAfter: jittered(obj.GetInterval())}, nil
 }
 
@@ -505,6 +518,7 @@ func (r *ArtifactReconciler) evaluateRun(ctx context.Context, obj *artifactsv1.A
 	}
 	if failed {
 		msg := fmt.Sprintf("generator %s %q reported failure", run.GetKind(), run.GetName())
+		r.Metrics.RecordGenerator(metrics.GeneratorFailed)
 		return r.recordAttemptFailure(obj, artifactsv1.ReasonGeneratorFailed, msg, now, maxAttempts, initialDelay, maxDelay)
 	}
 
@@ -520,6 +534,7 @@ func (r *ArtifactReconciler) evaluateRun(ctx context.Context, obj *artifactsv1.A
 				"generator %s %q succeeded", run.GetKind(), run.GetName())
 			r.Recorder.Eventf(obj, corev1.EventTypeNormal, "GeneratorSucceeded",
 				"generator %s %q succeeded; verifying artifact at %q", run.GetKind(), run.GetName(), obj.Status.Key)
+			r.Metrics.RecordGenerator(metrics.GeneratorSucceeded)
 		}
 		grace := class.GracePeriod()
 		elapsed := now.Sub(obj.Status.GeneratorSucceededAt.Time)
@@ -539,6 +554,7 @@ func (r *ArtifactReconciler) evaluateRun(ctx context.Context, obj *artifactsv1.A
 		msg := fmt.Sprintf(
 			"generator succeeded but no matching artifact appeared at %q within %s; check that the generator uploads to the expected key and stamps %q",
 			obj.Status.Key, grace, class.StampMetadataKey())
+		r.Metrics.RecordGenerator(metrics.GeneratorSucceededWithoutArtifact)
 		return r.recordAttemptFailure(obj, artifactsv1.ReasonSucceededWithoutArtifact, msg, now, maxAttempts, initialDelay, maxDelay)
 	}
 
@@ -564,6 +580,7 @@ func (r *ArtifactReconciler) evaluateRun(ctx context.Context, obj *artifactsv1.A
 			reason = artifactsv1.ReasonStatusUnrecognized
 			detail = fmt.Sprintf("status matches none of succeededWhen/failedWhen/inProgressWhen: %s",
 				summarizeStatus(run))
+			r.Metrics.RecordGenerator(metrics.GeneratorUnrecognized)
 		}
 	}
 
@@ -580,6 +597,7 @@ func (r *ArtifactReconciler) evaluateRun(ctx context.Context, obj *artifactsv1.A
 			if err := r.Delete(ctx, run, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
 				logf.FromContext(ctx).Error(err, "deleting stalled generator run", "run", run.GetName())
 			}
+			r.Metrics.RecordGenerator(metrics.GeneratorProgressDeadlineExceeded)
 			return r.recordAttemptFailure(obj, artifactsv1.ReasonProgressDeadlineExceeded, msg, now, maxAttempts, initialDelay, maxDelay)
 		}
 	}
@@ -651,6 +669,7 @@ func (r *ArtifactReconciler) recordAttemptFailure(obj *artifactsv1.Artifact, rea
 			"degraded after %d consecutive generator failures: %s", obj.Status.FailedAttempts, msg)
 		r.Recorder.Eventf(obj, corev1.EventTypeWarning, "Degraded",
 			"failure budget exhausted (%d/%d)", obj.Status.FailedAttempts, maxAttempts)
+		r.Metrics.RecordFailureBudgetExhausted()
 		return ctrl.Result{RequeueAfter: jittered(10 * obj.GetInterval())}, nil
 	}
 
@@ -735,6 +754,7 @@ func (r *ArtifactReconciler) reconcileExpired(ctx context.Context, obj *artifact
 		} else {
 			r.Recorder.Eventf(obj, corev1.EventTypeWarning, "KeyConflict",
 				"deleteAfter reached but object at %q is stamped %s; leaving it in place", key, stamp)
+			r.Metrics.RecordVerification(metrics.VerifyKeyConflict)
 		}
 	}
 	obj.Status.State = artifactsv1.StateExpired
@@ -776,7 +796,7 @@ func (r *ArtifactReconciler) reconcileDelete(ctx context.Context, obj *artifacts
 		case err != nil:
 			return ctrl.Result{}, err
 		default:
-			driver, derr := r.Registry.DriverFor(ctx, class)
+			driver, derr := r.driverFor(ctx, class)
 			if derr != nil {
 				return ctrl.Result{}, derr
 			}
@@ -807,6 +827,7 @@ func (r *ArtifactReconciler) reconcileDelete(ctx context.Context, obj *artifacts
 				} else {
 					r.Recorder.Eventf(obj, corev1.EventTypeWarning, "KeyConflict",
 						"object at %q is stamped %s; leaving it in place", obj.Status.Key, stamp)
+					r.Metrics.RecordVerification(metrics.VerifyKeyConflict)
 				}
 			}
 		}
@@ -899,4 +920,5 @@ func (r *ArtifactReconciler) recordDrift(obj *artifactsv1.Artifact, class *artif
 	msg := fmt.Sprintf("content at %q changed from %s to %s with no generator run of ours in between", key, was, now)
 	conditions.MarkTrue(obj, artifactsv1.ArtifactDriftedCondition, artifactsv1.ReasonContentDrifted, "%s", msg)
 	r.Recorder.Event(obj, corev1.EventTypeWarning, artifactsv1.ReasonContentDrifted, msg)
+	r.Metrics.RecordVerification(metrics.VerifyDrift)
 }

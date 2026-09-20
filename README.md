@@ -452,6 +452,28 @@ wholesale — see NOTICE:
 - **Crossplane**: Observe/Delete driver contract, Orphan/Delete deletion
   policies.
 
+## Prometheus metrics
+
+The controller-runtime endpoint (`--metrics-bind-address`, chart
+`metrics.enabled` default on) already served reconcile/workqueue series.
+Domain collectors now share that registry so a scrape answers "are artifacts
+healthy", not only "is the reconciler running".
+
+| Metric | Labels | Question it answers |
+|---|---|---|
+| `artifact_controller_store_operations_total` | `driver`, `op` (`observe`/`delete`) | How often each store driver is called |
+| `artifact_controller_store_operation_duration_seconds` | `driver`, `op` | How long those calls take |
+| `artifact_controller_store_operation_errors_total` | `driver`, `op` | How often a store call failed (a 10% erroring store shows up here before Artifacts drift out of Ready one by one) |
+| `artifact_controller_generator_runs_total` | `result` (`succeeded`, `failed`, `succeeded_without_artifact`, `unrecognized`, `progress_deadline_exceeded`) | Aggregate generator terminal outcomes — including the anti-patterns `SucceededWithoutArtifact` and progress-deadline expiry |
+| `artifact_controller_verification_outcomes_total` | `result` (`ok`, `key_conflict`, `drift`) | Verification: `key_conflict` and `drift` should stay flat |
+| `artifact_controller_failure_budget_exhausted_total` | _(none)_ | How often an Artifact became Degraded because consecutive failures hit `maxAttempts` |
+
+Label cardinality is bounded by construction: no series carries an Artifact
+name, spec hash, or store key. Per-Artifact state stays on the CR
+(`Ready` / `Deleting` / `StoreDeleteFailed` / …) and is scrapable via
+kube-state-metrics `customResourceState` — the in-process collectors do not
+duplicate that.
+
 Roadmap, roughly in order of value:
 
 - **Dedup across Artifacts.** Two Artifacts with the same identity resolve to
@@ -462,9 +484,9 @@ Roadmap, roughly in order of value:
   results, Argo outputs, Flux `status.artifact.digest`) as *provenance*. Note
   it cannot replace the store digest for drift: a run object is ephemeral, so
   it can only ever be captured once, never re-observed.
-- Event-driven requeues (S3 EventBridge / ECR events), Prometheus metrics, and
-  optionally emitting Flux `ExternalArtifact` objects (RFC-0012) so
-  kustomize/helm controllers can consume generated manifests.
+- Event-driven requeues (S3 EventBridge / ECR events), and optionally emitting
+  Flux `ExternalArtifact` objects (RFC-0012) so kustomize/helm controllers can
+  consume generated manifests.
 
 ## License
 
