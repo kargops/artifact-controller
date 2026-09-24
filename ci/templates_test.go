@@ -92,6 +92,39 @@ func TestMergeRequestTemplateMatchesPullRequestTemplate(t *testing.T) {
 	if a, b := matches(checkboxRe, gh), matches(checkboxRe, gl); !reflect.DeepEqual(a, b) {
 		t.Errorf("invariant checklists differ:\n  GitHub: %q\n  GitLab: %q", a, b)
 	}
+	// Section by section, everything else must match too: guidance comments,
+	// defaults such as "none", provenance prompts. Only the platform's name
+	// for the thing ("MR"), the text before the first heading, and each
+	// file's closing note and quick actions are allowed to differ.
+	_, ghSections := sections(trimTrailer(gh))
+	_, glSections := sections(trimTrailer(gl))
+	for heading, ghBody := range ghSections {
+		glBody := mrWordRe.ReplaceAllString(glSections[heading], "PR")
+		if normalize(ghBody) != normalize(glBody) {
+			t.Errorf("section %q differs:\n  GitHub: %q\n  GitLab: %q", heading, normalize(ghBody), normalize(glBody))
+		}
+	}
+}
+
+var (
+	mrWordRe = regexp.MustCompile(`\bMR\b`)
+)
+
+// trimTrailer drops a template's closing HTML comments and quick-action lines
+// — the platform-specific "how to close an issue" note and GitLab's /draft.
+func trimTrailer(doc string) string {
+	for {
+		doc = strings.TrimRight(doc, " \n")
+		lastLine := doc[strings.LastIndex(doc, "\n")+1:]
+		switch {
+		case strings.HasSuffix(doc, "-->"):
+			doc = doc[:strings.LastIndex(doc, "<!--")]
+		case strings.HasPrefix(lastLine, "/"):
+			doc = doc[:len(doc)-len(lastLine)]
+		default:
+			return doc
+		}
+	}
 }
 
 type issueForm struct {
