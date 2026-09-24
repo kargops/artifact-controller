@@ -8,8 +8,12 @@ package ci
 // invariant from half the contributors' view.
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 
@@ -24,20 +28,28 @@ var (
 	optionRe     = regexp.MustCompile(`(?m)^- (.+)$`)
 )
 
-// sectionOptions maps each "## " section of a GitLab template to the "- "
-// option lines inside it — the Markdown stand-in for a form dropdown.
-func sectionOptions(doc string) map[string][]string {
-	out := map[string][]string{}
+// sections splits a GitLab template into the text before its first "## "
+// heading and a map from each heading to the text under it.
+func sections(doc string) (header string, bodies map[string]string) {
+	bodies = map[string]string{}
 	locs := headingRe.FindAllStringSubmatchIndex(doc, -1)
+	if len(locs) == 0 {
+		return doc, bodies
+	}
+	header = doc[:locs[0][0]]
 	for i, loc := range locs {
 		end := len(doc)
 		if i+1 < len(locs) {
 			end = locs[i+1][0]
 		}
-		out[doc[loc[2]:loc[3]]] = matches(optionRe, doc[loc[1]:end])
+		bodies[doc[loc[2]:loc[3]]] = doc[loc[1]:end]
 	}
-	return out
+	return header, bodies
 }
+
+// normalize collapses whitespace so prose wrapped differently on the two
+// platforms (YAML strings vs Markdown comments) still compares equal.
+func normalize(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 func matches(re *regexp.Regexp, doc string) []string {
 	var out []string
@@ -87,8 +99,11 @@ type issueForm struct {
 	Body   []struct {
 		Type       string `yaml:"type"`
 		Attributes struct {
-			Label   string   `yaml:"label"`
-			Options []string `yaml:"options"`
+			Label       string   `yaml:"label"`
+			Description string   `yaml:"description"`
+			Value       string   `yaml:"value"`
+			Render      string   `yaml:"render"`
+			Options     []string `yaml:"options"`
 		} `yaml:"attributes"`
 		Validations struct {
 			Required bool `yaml:"required"`
@@ -96,26 +111,80 @@ type issueForm struct {
 	} `yaml:"body"`
 }
 
-func TestGitLabIssueTemplatesMatchGitHubForms(t *testing.T) {
-	pairs := map[string]string{
-		"../.github/ISSUE_TEMPLATE/bug_report.yml":      "../.gitlab/issue_templates/Bug.md",
-		"../.github/ISSUE_TEMPLATE/feature_request.yml": "../.gitlab/issue_templates/Feature_request.md",
+// issueTemplatePairs maps each GitHub issue form to its GitLab mirror. GitLab
+// shows the file name in its template picker, hence the different spelling.
+var issueTemplatePairs = map[string]string{
+	"bug_report.yml":      "Bug.md",
+	"feature_request.yml": "Feature_request.md",
+}
+
+func dirFiles(t *testing.T, dir, ext string, skip ...string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
 	}
-	for ghPath, glPath := range pairs {
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ext || slices.Contains(skip, e.Name()) {
+			continue
+		}
+		out = append(out, e.Name())
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestEveryTemplateHasAMirror catches a template added on one platform only —
+// the pair tests below compare contents but cannot see a file nobody listed.
+func TestEveryTemplateHasAMirror(t *testing.T) {
+	var wantGH, wantGL []string
+	for gh, gl := range issueTemplatePairs {
+		wantGH, wantGL = append(wantGH, gh), append(wantGL, gl)
+	}
+	sort.Strings(wantGH)
+	sort.Strings(wantGL)
+	if got := dirFiles(t, "../.github/ISSUE_TEMPLATE", ".yml", "config.yml"); !reflect.DeepEqual(got, wantGH) {
+		t.Errorf("GitHub issue forms %q, but issueTemplatePairs pairs %q — add the GitLab mirror and the pair", got, wantGH)
+	}
+	if got := dirFiles(t, "../.gitlab/issue_templates", ".md"); !reflect.DeepEqual(got, wantGL) {
+		t.Errorf("GitLab issue templates %q, but issueTemplatePairs pairs %q — add the GitHub form and the pair", got, wantGL)
+	}
+	if got := dirFiles(t, "../.gitlab/merge_request_templates", ".md"); !reflect.DeepEqual(got, []string{"Default.md"}) {
+		t.Errorf("GitLab MR templates %q; only Default.md mirrors .github/PULL_REQUEST_TEMPLATE.md", got)
+	}
+}
+
+func TestGitLabIssueTemplatesMatchGitHubForms(t *testing.T) {
+	for ghName, glName := range issueTemplatePairs {
+		ghPath, glPath := "../.github/ISSUE_TEMPLATE/"+ghName, "../.gitlab/issue_templates/"+glName
 		var form issueForm
 		if err := yaml.Unmarshal([]byte(readFile(t, ghPath)), &form); err != nil {
 			t.Fatalf("parse %s: %v", ghPath, err)
 		}
 		gl := readFile(t, glPath)
 
-		options := sectionOptions(gl)
+		header, bodies := sections(gl)
 		var fields []string
 		for _, el := range form.Body {
 			if el.Type == "markdown" {
+				// The GitLab header may add platform notes (no required
+				// fields, where security reports go) but must carry the
+				// form's own guidance verbatim.
+				if !strings.Contains(normalize(header), normalize(el.Attributes.Value)) {
+					t.Errorf("%s: header does not carry %s's intro text:\n  %q", glPath, ghPath, normalize(el.Attributes.Value))
+				}
 				continue
 			}
 			label := el.Attributes.Label
 			fields = append(fields, label)
+			body := bodies[label]
+			if d := el.Attributes.Description; d != "" && !strings.Contains(normalize(body), normalize(d)) {
+				t.Errorf("%s: section %q does not carry the form's description:\n  %q", glPath, label, normalize(d))
+			}
+			if r := el.Attributes.Render; r != "" && !strings.Contains(body, "```"+r+"\n") {
+				t.Errorf("%s: section %q needs a ```%s block to match the form's render", glPath, label, r)
+			}
 			// GitLab cannot enforce required fields; its templates say every
 			// section is required unless the heading ends "(optional)". The
 			// heading equals the form label, so pin that marker to the form's
@@ -125,7 +194,7 @@ func TestGitLabIssueTemplatesMatchGitHubForms(t *testing.T) {
 			}
 			// Exact, ordered comparison: an option dropped or renamed on
 			// either side is drift, not only one missing from GitLab.
-			want, got := el.Attributes.Options, options[label]
+			want, got := el.Attributes.Options, matches(optionRe, body)
 			if len(want) != 0 || len(got) != 0 {
 				if !reflect.DeepEqual(want, got) {
 					t.Errorf("%s: options of %q differ:\n  form:     %q\n  template: %q", glPath, label, want, got)
@@ -143,10 +212,10 @@ func TestGitLabIssueTemplatesMatchGitHubForms(t *testing.T) {
 
 func TestTemplateLabelsAreDefined(t *testing.T) {
 	defined := definedLabels(t)
-	for _, path := range []string{
-		"../.github/ISSUE_TEMPLATE/bug_report.yml",
-		"../.github/ISSUE_TEMPLATE/feature_request.yml",
-	} {
+	// Every file on disk, not a list: a template the pair tests do not know
+	// about yet must still apply only defined labels.
+	for _, name := range dirFiles(t, "../.github/ISSUE_TEMPLATE", ".yml", "config.yml") {
+		path := "../.github/ISSUE_TEMPLATE/" + name
 		var form issueForm
 		if err := yaml.Unmarshal([]byte(readFile(t, path)), &form); err != nil {
 			t.Fatalf("parse %s: %v", path, err)
@@ -157,14 +226,13 @@ func TestTemplateLabelsAreDefined(t *testing.T) {
 			}
 		}
 	}
-	for _, path := range []string{
-		"../.gitlab/issue_templates/Bug.md",
-		"../.gitlab/issue_templates/Feature_request.md",
-		"../.gitlab/merge_request_templates/Default.md",
-	} {
-		for _, l := range quickActionLabels(readFile(t, path)) {
-			if !defined[l] {
-				t.Errorf("%s applies label %q, which .github/labels.yml does not define", path, l)
+	for _, dir := range []string{"../.gitlab/issue_templates", "../.gitlab/merge_request_templates"} {
+		for _, name := range dirFiles(t, dir, ".md") {
+			path := dir + "/" + name
+			for _, l := range quickActionLabels(readFile(t, path)) {
+				if !defined[l] {
+					t.Errorf("%s applies label %q, which .github/labels.yml does not define", path, l)
+				}
 			}
 		}
 	}
