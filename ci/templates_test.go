@@ -90,6 +90,9 @@ type issueForm struct {
 			Label   string   `yaml:"label"`
 			Options []string `yaml:"options"`
 		} `yaml:"attributes"`
+		Validations struct {
+			Required bool `yaml:"required"`
+		} `yaml:"validations"`
 	} `yaml:"body"`
 }
 
@@ -113,6 +116,13 @@ func TestGitLabIssueTemplatesMatchGitHubForms(t *testing.T) {
 			}
 			label := el.Attributes.Label
 			fields = append(fields, label)
+			// GitLab cannot enforce required fields; its templates say every
+			// section is required unless the heading ends "(optional)". The
+			// heading equals the form label, so pin that marker to the form's
+			// own required flag.
+			if optional := strings.HasSuffix(label, "(optional)"); optional == el.Validations.Required {
+				t.Errorf("%s: field %q has required=%v, but its label says optional=%v — GitLab reporters read the label", ghPath, label, el.Validations.Required, optional)
+			}
 			// Exact, ordered comparison: an option dropped or renamed on
 			// either side is drift, not only one missing from GitLab.
 			want, got := el.Attributes.Options, options[label]
