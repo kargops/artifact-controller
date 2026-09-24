@@ -1,8 +1,10 @@
 # Label definitions. Sync after editing:
 #   while read -r name color desc; do gh label create "$name" --color "$color" --description "$desc" --force; done < <(yq -r '.[] | [.name, .color, .description] | @tsv' .github/labels.yml)
 # or by hand with `gh label create <name> --color <color> --description <desc> --force`.
-# On GitLab (same names; the .gitlab/ templates apply them via /label quick actions):
-#   while read -r name color desc; do glab label create --name "$name" --color "#$color" --description "$desc"; done < <(yq -r '.[] | [.name, .color, .description] | @tsv' .github/labels.yml)
+# On GitLab (same names; the .gitlab/ templates apply them via /label quick actions).
+# `glab label create` cannot overwrite, so update by title first and create only
+# when the label does not exist yet — reruns then carry color/description edits:
+#   while IFS=$'\t' read -r name color desc; do enc=$(jq -rn --arg n "$name" '$n|@uri'); glab api --method PUT "projects/:id/labels/$enc" -f "color=#$color" -f "description=$desc" >/dev/null 2>&1 || glab label create --name "$name" --color "#$color" --description "$desc"; done < <(yq -r '.[] | [.name, .color, .description] | @tsv' .github/labels.yml)
 #
 # One label per relevant axis. Deliberately small: no stage/priority/risk axes
 # until there is a program to manage — risk tier follows from the paths a change
