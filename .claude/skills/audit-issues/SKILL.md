@@ -46,10 +46,11 @@ Other candidates waiting on a single decision: #A, #B, ...
 
 State `DECISION GAP: none` when every excluded candidate failed for some other reason — a
 technical defect in the issue, an invariant it would break, an active PR, an unsatisfied
-dependency or `agent/blocked`, or scope beyond one bounded change. A missing `agent/ready` label or a
-single open decision is the *only* exclusion this section covers; do not use it to relitigate an issue's technical defects, and do not use it
-for an issue that would change an `AGENTS.md` invariant (the identity hash encoding, the API
-group, identity semantics) — that is a migration decision, not a single question.
+dependency or `agent/blocked`, or scope beyond one bounded change. A missing `agent/ready` label,
+a single open decision, and a single missing report detail are the *only* exclusions this section
+covers; do not use it to relitigate an issue's technical defects, and do not use it for an issue
+that would change an `AGENTS.md` invariant (the identity hash encoding, the API group, identity
+semantics) — that is a migration decision, not a single question.
 
 This section is still only a report. Naming the gap does not authorize posting, answering,
 labelling, or implementing it — the read-only rule above is unchanged, and running
