@@ -52,20 +52,36 @@ func factory(ctx context.Context, class *artifactsv1.ArtifactClass) (store.Drive
 		}
 		o.UsePathStyle = cfg.UsePathStyle
 	})
-	return &driver{client: client, bucket: cfg.Bucket}, nil
+	return &driver{client: client, bucket: cfg.Bucket, checksums: class.PromotionEnabled()}, nil
 }
 
 type driver struct {
-	client *awss3.Client
-	bucket string
+	client    *awss3.Client
+	bucket    string
+	checksums bool
 }
 
 func (d *driver) Observe(ctx context.Context, key string) (store.Observation, error) {
-	head, err := d.client.HeadObject(ctx, &awss3.HeadObjectInput{
-		Bucket:       aws.String(d.bucket),
-		Key:          aws.String(key),
-		ChecksumMode: types.ChecksumModeEnabled,
-	})
+	in := &awss3.HeadObjectInput{
+		Bucket: aws.String(d.bucket),
+		Key:    aws.String(key),
+	}
+	// Checksum mode is only useful for promotion, which compares the store's
+	// own sha256 to the content-digest stamp. Direct-write classes must not
+	// send it: S3-compatible stores that reject the header would fail every
+	// observe. A store that rejects it on a promotion class is retried once
+	// without the header; ContentSHA256 stays empty and the stamp check
+	// degrades to "present and unchanged".
+	if d.checksums {
+		in.ChecksumMode = types.ChecksumModeEnabled
+	}
+	head, err := d.client.HeadObject(ctx, in)
+	if err != nil && d.checksums && !isNotFound(err) {
+		in.ChecksumMode = ""
+		if retried, rerr := d.client.HeadObject(ctx, in); rerr == nil {
+			head, err = retried, nil
+		}
+	}
 	if err != nil {
 		if isNotFound(err) {
 			return store.Observation{}, nil
@@ -108,11 +124,9 @@ func (d *driver) Delete(ctx context.Context, key string) error {
 // between fails the copy instead of inheriting the verification.
 func (d *driver) Promote(ctx context.Context, req store.PromoteRequest) (string, error) {
 	get := &awss3.GetObjectInput{
-		Bucket: aws.String(d.bucket),
-		Key:    aws.String(req.SourceKey),
-	}
-	if etag := strings.TrimPrefix(req.SourceDigest, "etag:"); etag != req.SourceDigest && etag != "" {
-		get.IfMatch = aws.String(etag)
+		Bucket:  aws.String(d.bucket),
+		Key:     aws.String(req.SourceKey),
+		IfMatch: etagIfMatch(req.SourceDigest),
 	}
 	obj, err := d.client.GetObject(ctx, get)
 	if err != nil {
@@ -147,8 +161,11 @@ func (d *driver) Promote(ctx context.Context, req store.PromoteRequest) (string,
 		// value no writer chose.
 		ChecksumAlgorithm: types.ChecksumAlgorithmSha256,
 	}
-	if obj.ETag != nil && *obj.ETag != "" {
-		cp.CopySourceIfMatch = obj.ETag
+	// REPLACE drops system headers the generator set. Copy them or the
+	// promoted object is stored as application/octet-stream.
+	applyObjectHeaders(cp, obj)
+	if etag := quotedETag(aws.ToString(obj.ETag)); etag != "" {
+		cp.CopySourceIfMatch = aws.String(etag)
 	}
 	out, err := d.client.CopyObject(ctx, cp)
 	if err != nil {
@@ -178,6 +195,47 @@ func contentSHA256(b64 string, typ types.ChecksumType) string {
 		return ""
 	}
 	return "sha256:" + hex.EncodeToString(raw)
+}
+
+// etagIfMatch turns an observation digest into the quoted ETag S3's
+// If-Match requires. Observe stores the etag with quotes stripped
+// ("etag:abc"); sending that bare value makes AWS return 412. Digests that
+// are not etags (sha256-b64) pin nothing here — CopySourceIfMatch still pins
+// the copy to the version that was hashed.
+func etagIfMatch(digest string) *string {
+	rest, ok := strings.CutPrefix(digest, "etag:")
+	if !ok {
+		return nil
+	}
+	q := quotedETag(rest)
+	if q == "" {
+		return nil
+	}
+	return aws.String(q)
+}
+
+// quotedETag returns etag in the double-quoted form S3 conditional requests
+// require. An already-quoted value is left alone.
+func quotedETag(etag string) string {
+	etag = strings.TrimSpace(etag)
+	if etag == "" {
+		return ""
+	}
+	if strings.HasPrefix(etag, `"`) {
+		return etag
+	}
+	return `"` + etag + `"`
+}
+
+// applyObjectHeaders copies the system headers CopyObject does not preserve
+// when MetadataDirective is REPLACE.
+func applyObjectHeaders(cp *awss3.CopyObjectInput, obj *awss3.GetObjectOutput) {
+	cp.ContentType = obj.ContentType
+	cp.ContentEncoding = obj.ContentEncoding
+	cp.ContentDisposition = obj.ContentDisposition
+	cp.ContentLanguage = obj.ContentLanguage
+	cp.CacheControl = obj.CacheControl
+	cp.Expires = obj.Expires
 }
 
 func isNotFound(err error) bool {

@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"net/url"
 	"testing"
+	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
@@ -47,5 +50,49 @@ func TestCopySourceEscaping(t *testing.T) {
 	want := "my-bucket/incoming/sha256:abc%20def"
 	if got != want {
 		t.Fatalf("escaped copy source = %q, want %q", got, want)
+	}
+}
+
+func TestETagIfMatchQuotesStrippedObservationDigest(t *testing.T) {
+	cases := []struct {
+		digest string
+		want   string
+	}{
+		{"etag:abc123", `"abc123"`},
+		{`etag:"abc123"`, `"abc123"`},
+		{"etag:abc-2", `"abc-2"`},
+		{"sha256-b64:abcd", ""},
+		{"etag:", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		got := ""
+		if p := etagIfMatch(tc.digest); p != nil {
+			got = *p
+		}
+		if got != tc.want {
+			t.Errorf("etagIfMatch(%q) = %q, want %q", tc.digest, got, tc.want)
+		}
+	}
+}
+
+func TestApplyObjectHeadersCopiesSystemHeaders(t *testing.T) {
+	exp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	cp := &awss3.CopyObjectInput{}
+	applyObjectHeaders(cp, &awss3.GetObjectOutput{
+		ContentType:        aws.String("application/gzip"),
+		ContentEncoding:    aws.String("gzip"),
+		ContentDisposition: aws.String("attachment"),
+		ContentLanguage:    aws.String("en"),
+		CacheControl:       aws.String("public"),
+		Expires:            &exp,
+	})
+	if aws.ToString(cp.ContentType) != "application/gzip" ||
+		aws.ToString(cp.ContentEncoding) != "gzip" ||
+		aws.ToString(cp.ContentDisposition) != "attachment" ||
+		aws.ToString(cp.ContentLanguage) != "en" ||
+		aws.ToString(cp.CacheControl) != "public" ||
+		cp.Expires == nil || !cp.Expires.Equal(exp) {
+		t.Fatalf("system headers not copied: %#v", cp)
 	}
 }
