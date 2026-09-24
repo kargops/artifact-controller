@@ -192,6 +192,37 @@ func TestPromotionRefusesLyingContentStamp(t *testing.T) {
 	}).WithTimeout(time.Second).Should(Succeed())
 }
 
+func TestPromotionRegenerateRefusesStrippedStamp(t *testing.T) {
+	g := NewWithT(t)
+	class := newPromotionClass("promo-regen", 3, 30*time.Second, time.Second)
+	class.Spec.Drift = &artifactsv1.DriftSpec{Policy: artifactsv1.DriftPolicyRegenerate}
+	md := stamped("promo6r")
+	md[artifactsv1.DefaultContentDigestKey] = contentSHA("original")
+	fakeStore.PutContent(storeKey("promo6r"), "original", md)
+	g.Expect(k8sClient.Create(testCtx, class)).To(Succeed())
+	g.Expect(k8sClient.Create(testCtx, newArtifact("promo6r", "promo-regen"))).To(Succeed())
+
+	g.Eventually(func(g Gomega) {
+		g.Expect(getArtifact(g, "promo6r").Status.ContentDigest).To(Equal(contentSHA("original")))
+	}).Should(Succeed())
+
+	// Digest changed and the content stamp is gone. Regenerate must not
+	// rebuild over that evidence; it parks at ContentMismatch.
+	fakeStore.PutContent(storeKey("promo6r"), "replaced", stamped("promo6r"))
+	g.Eventually(func(g Gomega) {
+		a := getArtifact(g, "promo6r")
+		g.Expect(a.Status.State).To(Equal(artifactsv1.StateKeyConflict))
+		g.Expect(condReason(a, fluxmeta.ReadyCondition)).To(Equal(artifactsv1.ReasonContentMismatch))
+	}).Should(Succeed())
+
+	g.Consistently(func(g Gomega) {
+		cm := &corev1.ConfigMap{}
+		err := k8sClient.Get(testCtx, types.NamespacedName{Namespace: testNS, Name: cmName("promo6r", "promo6r", 1)}, cm)
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		g.Expect(getArtifact(g, "promo6r").Status.State).To(Equal(artifactsv1.StateKeyConflict))
+	}).WithTimeout(time.Second).Should(Succeed())
+}
+
 func TestPromotionDetectsStrippedStampAfterReady(t *testing.T) {
 	g := NewWithT(t)
 	md := stamped("promo6")

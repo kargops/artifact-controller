@@ -330,6 +330,13 @@ func (r *ArtifactReconciler) reconcileExisting(ctx context.Context, obj *artifac
 		// An observe-only Artifact reports the drift but never acts on it: for
 		// a sensor, a Regenerate class policy degrades to Warn.
 		if class.DriftPolicy() == artifactsv1.DriftPolicyRegenerate && !obj.ObserveOnly() {
+			// Promotion parks disproven content at ContentMismatch and must
+			// not rebuild over it. A consistent replacement still regenerates.
+			if class.PromotionEnabled() {
+				if res, handled, err := r.verifyPromoted(ctx, obj, class, driver, obs, in); handled {
+					return res, err
+				}
+			}
 			// Treat as missing so the normal generator path restores it.
 			obj.Status.Digest = ""
 			return r.reconcileMissing(ctx, obj, class, driver, in, now)

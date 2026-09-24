@@ -70,16 +70,18 @@ func (d *driver) Observe(ctx context.Context, key string) (store.Observation, er
 	// own sha256 to the content-digest stamp. Direct-write classes must not
 	// send it: S3-compatible stores that reject the header would fail every
 	// observe. A store that rejects it on a promotion class is retried once
-	// without the header; ContentSHA256 stays empty and the stamp check
-	// degrades to "present and unchanged".
+	// without the header. A not-found on that retry is absence — the same
+	// rejection is returned for a missing key — so it must replace the
+	// original error. ContentSHA256 stays empty and the stamp check degrades
+	// to "present and unchanged".
 	if d.checksums {
 		in.ChecksumMode = types.ChecksumModeEnabled
 	}
 	head, err := d.client.HeadObject(ctx, in)
 	if err != nil && d.checksums && !isNotFound(err) {
 		in.ChecksumMode = ""
-		if retried, rerr := d.client.HeadObject(ctx, in); rerr == nil {
-			head, err = retried, nil
+		if retried, rerr := d.client.HeadObject(ctx, in); rerr == nil || isNotFound(rerr) {
+			head, err = retried, rerr
 		}
 	}
 	if err != nil {

@@ -1,14 +1,20 @@
 package s3
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
@@ -94,5 +100,50 @@ func TestApplyObjectHeadersCopiesSystemHeaders(t *testing.T) {
 		aws.ToString(cp.CacheControl) != "public" ||
 		cp.Expires == nil || !cp.Expires.Equal(exp) {
 		t.Fatalf("system headers not copied: %#v", cp)
+	}
+}
+
+// A store that rejects ChecksumMode fails HeadObject for both present and
+// missing keys. The retry without the header must surface a missing key as
+// absence, not as the original rejection.
+func TestObserveChecksumRetryReportsMissingKey(t *testing.T) {
+	var sawChecksum bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-amz-checksum-mode") != "" {
+			sawChecksum = true
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `<Error><Code>InvalidRequest</Code><Message>checksum mode unsupported</Message></Error>`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `<Error><Code>NotFound</Code><Message>Not Found</Message></Error>`)
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx := context.Background()
+	cfg, err := awsconfig.LoadDefaultConfig(ctx,
+		awsconfig.WithRegion("us-east-1"),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("AKID", "SECRET", "")),
+	)
+	if err != nil {
+		t.Fatalf("load aws config: %v", err)
+	}
+	client := awss3.NewFromConfig(cfg, func(o *awss3.Options) {
+		o.BaseEndpoint = aws.String(srv.URL)
+		o.UsePathStyle = true
+	})
+	d := &driver{client: client, bucket: "bucket", checksums: true}
+
+	obs, err := d.Observe(ctx, "missing-key")
+	if err != nil {
+		t.Fatalf("Observe missing key: %v", err)
+	}
+	if obs.Exists || obs.Digest != "" || obs.ContentSHA256 != "" {
+		t.Fatalf("Observe missing key = %#v, want absence", obs)
+	}
+	if !sawChecksum {
+		t.Fatal("first HeadObject did not send checksum mode")
 	}
 }
