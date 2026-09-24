@@ -81,7 +81,17 @@
       "additionalProperties": false,
       "properties": {
         "enabled": { "type": "boolean" },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "serviceMonitor": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Optional prometheus-operator ServiceMonitor. Default off so the chart does not require the CRD.",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "interval": { "type": "string", "minLength": 1 },
+            "labels": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        }
       }
     },
     "generator": {

@@ -25,7 +25,15 @@ Image: {{ include "artifact-controller.image" . }}
      under generator.engines in values.
 {{- end }}
 
-3. Define an ArtifactClass, then declare Artifacts against it:
+3. Metrics:{{- if .Values.metrics.enabled }}
+     Service {{ include "artifact-controller.fullname" . }}-metrics:{{ .Values.metrics.port }}
+     (plain HTTP, no auth).{{- if .Values.metrics.serviceMonitor.enabled }} ServiceMonitor is on.{{- else }}
+     No ServiceMonitor (metrics.serviceMonitor.enabled=false).{{- end }}
+{{- else }}
+     disabled (metrics.enabled=false)
+{{- end }}
+
+4. Define an ArtifactClass, then declare Artifacts against it:
 
      kubectl get artifactclasses
      kubectl get artifacts -A

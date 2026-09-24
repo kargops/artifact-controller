@@ -49,6 +49,15 @@ controller:
 metrics:
   enabled: true
   port: 8080
+  # The endpoint is plain HTTP with no authn/authz: anything that can
+  # reach the pod IP (or this Service) on the port can read metrics.
+  # A Service is rendered when enabled so in-cluster scrapers have a
+  # stable target; prometheus-operator discovery is opt-in below so
+  # the chart does not require that CRD.
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
 
 # Everything about the runs the controller starts to produce artifacts.
 generator:
