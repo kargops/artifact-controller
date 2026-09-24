@@ -21,7 +21,23 @@ var (
 	checkboxRe   = regexp.MustCompile(`(?m)^- \[ \] (.+)$`)
 	quickLabelRe = regexp.MustCompile(`(?m)^/label (.+)$`)
 	labelRefRe   = regexp.MustCompile(`~"([^"]+)"`)
+	optionRe     = regexp.MustCompile(`(?m)^- (.+)$`)
 )
+
+// sectionOptions maps each "## " section of a GitLab template to the "- "
+// option lines inside it — the Markdown stand-in for a form dropdown.
+func sectionOptions(doc string) map[string][]string {
+	out := map[string][]string{}
+	locs := headingRe.FindAllStringSubmatchIndex(doc, -1)
+	for i, loc := range locs {
+		end := len(doc)
+		if i+1 < len(locs) {
+			end = locs[i+1][0]
+		}
+		out[doc[loc[2]:loc[3]]] = matches(optionRe, doc[loc[1]:end])
+	}
+	return out
+}
 
 func matches(re *regexp.Regexp, doc string) []string {
 	var out []string
@@ -89,15 +105,20 @@ func TestGitLabIssueTemplatesMatchGitHubForms(t *testing.T) {
 		}
 		gl := readFile(t, glPath)
 
+		options := sectionOptions(gl)
 		var fields []string
 		for _, el := range form.Body {
 			if el.Type == "markdown" {
 				continue
 			}
-			fields = append(fields, el.Attributes.Label)
-			for _, opt := range el.Attributes.Options {
-				if !strings.Contains(gl, opt) {
-					t.Errorf("%s: option %q of field %q missing", glPath, opt, el.Attributes.Label)
+			label := el.Attributes.Label
+			fields = append(fields, label)
+			// Exact, ordered comparison: an option dropped or renamed on
+			// either side is drift, not only one missing from GitLab.
+			want, got := el.Attributes.Options, options[label]
+			if len(want) != 0 || len(got) != 0 {
+				if !reflect.DeepEqual(want, got) {
+					t.Errorf("%s: options of %q differ:\n  form:     %q\n  template: %q", glPath, label, want, got)
 				}
 			}
 		}
