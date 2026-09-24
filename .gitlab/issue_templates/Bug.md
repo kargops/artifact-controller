@@ -6,8 +6,8 @@ Thanks — a precise report is often the best first contribution to this
 project. The status/conditions output usually contains the answer, so please
 include it even when it looks unremarkable.
 
-Security vulnerability? Do not file it here — see SECURITY.md, or tick
-"This issue is confidential" below the description. -->
+Security vulnerability? Do not file it here — report it privately as
+SECURITY.md describes. -->
 
 ## Store driver
 
