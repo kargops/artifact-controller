@@ -40,8 +40,17 @@ record), and current issue/PR state as the candidate requires.
 
 ## Candidate discovery
 
-Candidate discovery is mechanical, not a separate semantic scan. Unless the caller supplies issue
-numbers, inspect every open issue (pull requests are not issues). Exclude from the rankable set
+Candidate discovery is mechanical, not a separate semantic scan. The caller's scope decides the
+starting set:
+
+- issue numbers: exactly those issues;
+- labels (for example `area/store` or `type/bug`): every open issue carrying all of them;
+- free text: open issues whose title or body matches it (`mcp__github__search_issues`);
+- no scope: every open issue.
+
+Pull requests are never candidates. State the scope as you interpreted it at the top of the
+report, and never select or rank an issue outside it; if the scope is ambiguous or matches
+nothing, say so and select nothing rather than widening it. Exclude from the rankable set
 issues that have an active implementation PR, have an unsatisfied dependency (a referenced issue
 or PR that must land first), are tracking or umbrella issues rather than one change, are
 security reports that belong in a private advisory (`SECURITY.md`), or are questions/support
