@@ -47,6 +47,35 @@ func sections(doc string) (header string, bodies map[string]string) {
 	return header, bodies
 }
 
+// gitlabOnlyNotes are the header paragraphs a GitLab issue template adds on
+// purpose — the mirror note (GitLab cannot enforce required fields) and where
+// security reports go — identified by how they start.
+var gitlabOnlyNotes = []string{"Mirrors ", "Security vulnerability?"}
+
+// firstComment returns the text inside the first HTML comment in s.
+func firstComment(s string) string {
+	start := strings.Index(s, "<!--")
+	if start < 0 {
+		return ""
+	}
+	rest := s[start+len("<!--"):]
+	if end := strings.Index(rest, "-->"); end >= 0 {
+		return rest[:end]
+	}
+	return rest
+}
+
+// paragraphs splits text on blank lines and normalizes each paragraph.
+func paragraphs(s string) []string {
+	var out []string
+	for _, p := range regexp.MustCompile(`\n\s*\n`).Split(s, -1) {
+		if p = normalize(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // normalize collapses whitespace so prose wrapped differently on the two
 // platforms (YAML strings vs Markdown comments) still compares equal.
 func normalize(s string) string { return strings.Join(strings.Fields(s), " ") }
@@ -198,22 +227,17 @@ func TestGitLabIssueTemplatesMatchGitHubForms(t *testing.T) {
 		gl := readFile(t, glPath)
 
 		header, bodies := sections(gl)
-		var fields []string
+		var fields, intro []string
 		for _, el := range form.Body {
 			if el.Type == "markdown" {
-				// The GitLab header may add platform notes (no required
-				// fields, where security reports go) but must carry the
-				// form's own guidance verbatim.
-				if !strings.Contains(normalize(header), normalize(el.Attributes.Value)) {
-					t.Errorf("%s: header does not carry %s's intro text:\n  %q", glPath, ghPath, normalize(el.Attributes.Value))
-				}
+				intro = append(intro, paragraphs(el.Attributes.Value)...)
 				continue
 			}
 			label := el.Attributes.Label
 			fields = append(fields, label)
 			body := bodies[label]
-			if d := el.Attributes.Description; d != "" && !strings.Contains(normalize(body), normalize(d)) {
-				t.Errorf("%s: section %q does not carry the form's description:\n  %q", glPath, label, normalize(d))
+			if d := el.Attributes.Description; d != "" && normalize(firstComment(body)) != normalize(d) {
+				t.Errorf("%s: section %q guidance differs from the form's description:\n  form:     %q\n  template: %q", glPath, label, normalize(d), normalize(firstComment(body)))
 			}
 			if r := el.Attributes.Render; r != "" && !strings.Contains(body, "```"+r+"\n") {
 				t.Errorf("%s: section %q needs a ```%s block to match the form's render", glPath, label, r)
@@ -233,6 +257,17 @@ func TestGitLabIssueTemplatesMatchGitHubForms(t *testing.T) {
 					t.Errorf("%s: options of %q differ:\n  form:     %q\n  template: %q", glPath, label, want, got)
 				}
 			}
+		}
+		// The header comment must say exactly what the form's markdown says,
+		// apart from the GitLab-only notes named in gitlabOnlyNotes.
+		var glIntro []string
+		for _, para := range paragraphs(firstComment(header)) {
+			if !slices.ContainsFunc(gitlabOnlyNotes, func(p string) bool { return strings.HasPrefix(para, p) }) {
+				glIntro = append(glIntro, para)
+			}
+		}
+		if !reflect.DeepEqual(intro, glIntro) {
+			t.Errorf("%s: header text differs from %s's intro:\n  form:     %q\n  template: %q", glPath, ghPath, intro, glIntro)
 		}
 		if headings := matches(headingRe, gl); !reflect.DeepEqual(fields, headings) {
 			t.Errorf("%s: sections differ from %s's fields:\n  form:     %q\n  template: %q", glPath, ghPath, fields, headings)
