@@ -37,10 +37,15 @@ numbers, inspect every open issue (pull requests are not issues). Exclude from t
 issues that have an active implementation PR, have an unsatisfied dependency (a referenced issue
 or PR that must land first), are tracking or umbrella issues rather than one change, are
 security reports that belong in a private advisory (`SECURITY.md`), or are questions/support
-requests with no requested change. This repository deliberately has no readiness, priority, stage,
-or risk labels (`.github/labels.yml`), so readiness is established by this audit, not by a label;
-do not treat the absence of such labels as a gate. Do not assume `type/*` or `area/*` labels or
-dependency declarations are correct; verify them against the change the issue actually needs.
+requests with no requested change, are labelled `human/decision-required` or `agent/blocked`, or
+are not labelled `agent/ready` (label meanings: `docs/agent-workflow.md`, "Issue readiness
+labels"). This repository deliberately has no risk, priority, or stage labels: derive the tier
+from the paths the change touches. Do not assume any label or dependency declaration is correct;
+verify them against the change the issue actually needs. A label that no longer holds — a
+decision already answered in the comments, a blocker that has landed, `agent/ready` on an issue
+that fails validation — is reported as stale for a human to fix; the exclusion it causes stands
+until a human changes it. Still validate open issues that lack only `agent/ready`: one that passes
+every other check is reported as ready to label, not ranked.
 Explicitly supplied issues must still be audited, but remain ineligible while a process gate is
 unsatisfied.
 
@@ -111,6 +116,7 @@ An issue is eligible only when all of these are true:
 - acceptance is objectively testable by a unit test or envtest that fails without the change,
   runnable with no cluster, registry, or cloud account;
 - no material product, API, compatibility, security, or operational decision remains open;
+- the issue carries `agent/ready` and neither `human/decision-required` nor `agent/blocked`;
 - the change breaks no `AGENTS.md` invariant and needs no stop condition from
   `docs/agent-workflow.md` resolved first; and
 - a **high**-tier change (`api/v1alpha1/`, `internal/hash/`, `config/rbac/`, chart RBAC/CRD
@@ -126,7 +132,9 @@ concise issue comment containing:
 - the exact questionable claim or unresolved decision;
 - repository and external evidence, including file paths and URLs where applicable;
 - the concrete consequence;
-- what a human must clarify or decide before re-audit.
+- what a human must clarify or decide before re-audit;
+- the label change it implies, for a human to apply (`human/decision-required` when a decision
+  is open; removing `agent/ready` when the issue carries it).
 
 Prefix the draft with `<!-- claude-issue-audit-concern -->`. Inspect existing comments and do not
 return a materially duplicate concern for posting. Do not draft comments merely because an issue
@@ -160,6 +168,8 @@ Return a compact report with:
 - candidates inspected and mechanical exclusions;
 - technically excluded issues and either the exact concern comment to post or the matching existing
   concern;
+- stale labels, each with the evidence and the change a human should make;
+- issues ready to label: every check passed except the missing `agent/ready`;
 - eligible issues in simplicity order, with risk tier, evidence confidence, complete change
   surface, and required gates (`./ci/test.sh`, `make manifests generate`, chart bump, independent
   review);

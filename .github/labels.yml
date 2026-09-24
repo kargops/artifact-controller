@@ -3,7 +3,10 @@
 # or by hand with `gh label create <name> --color <color> --description <desc> --force`.
 #
 # One label per relevant axis. Deliberately small: no stage/priority/risk axes
-# until there is a program to manage (see docs/agent-workflow.md).
+# until there is a program to manage — risk tier follows from the paths a change
+# touches, and the README roadmap orders value. The agent/* and human/* labels
+# record readiness; who applies each is in docs/agent-workflow.md ("Issue
+# readiness labels").
 
 - name: type/bug
   color: d73a4a
@@ -36,6 +39,16 @@
 - name: area/docs
   color: e4e669
   description: README, quickstart, AGENTS.md
+
+- name: agent/ready
+  color: 0e8a16
+  description: Human-confirmed ready for an agent to implement
+- name: agent/blocked
+  color: b60205
+  description: Waiting on something outside this issue (dependency, release, access)
+- name: human/decision-required
+  color: d93f0b
+  description: A maintainer decision is open; not implementable until answered
 
 - name: good first issue
   color: 7057ff
