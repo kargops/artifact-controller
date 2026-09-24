@@ -26,6 +26,7 @@ var (
 	quickLabelRe = regexp.MustCompile(`(?m)^/label (.+)$`)
 	labelRefRe   = regexp.MustCompile(`~"([^"]+)"`)
 	optionRe     = regexp.MustCompile(`(?m)^- (.+)$`)
+	fenceOpenRe  = regexp.MustCompile("(?m)^```(\\w+)\\s*$")
 )
 
 // sections splits a GitLab template into the text before its first "## "
@@ -236,18 +237,20 @@ func TestGitLabIssueTemplatesMatchGitHubForms(t *testing.T) {
 			label := el.Attributes.Label
 			fields = append(fields, label)
 			body := bodies[label]
-			if d := el.Attributes.Description; d != "" && normalize(firstComment(body)) != normalize(d) {
-				t.Errorf("%s: section %q guidance differs from the form's description:\n  form:     %q\n  template: %q", glPath, label, normalize(d), normalize(firstComment(body)))
+			// Presence as well as value: removing a description or render on
+			// GitHub must remove the GitLab comment or code fence too. A
+			// dropdown's comment is its option list, compared below.
+			if el.Type != "dropdown" || el.Attributes.Description != "" {
+				if want, got := normalize(el.Attributes.Description), normalize(firstComment(body)); want != got {
+					t.Errorf("%s: section %q guidance differs from the form's description:\n  form:     %q\n  template: %q", glPath, label, want, got)
+				}
 			}
-			if r := el.Attributes.Render; r != "" && !strings.Contains(body, "```"+r+"\n") {
-				t.Errorf("%s: section %q needs a ```%s block to match the form's render", glPath, label, r)
+			var wantFence []string
+			if r := el.Attributes.Render; r != "" {
+				wantFence = []string{r}
 			}
-			// GitLab cannot enforce required fields; its templates say every
-			// section is required unless the heading ends "(optional)". The
-			// heading equals the form label, so pin that marker to the form's
-			// own required flag.
-			if optional := strings.HasSuffix(label, "(optional)"); optional == el.Validations.Required {
-				t.Errorf("%s: field %q has required=%v, but its label says optional=%v — GitLab reporters read the label", ghPath, label, el.Validations.Required, optional)
+			if got := matches(fenceOpenRe, body); !reflect.DeepEqual(wantFence, got) {
+				t.Errorf("%s: section %q code fences %q, form render wants %q", glPath, label, got, wantFence)
 			}
 			// Exact, ordered comparison: an option dropped or renamed on
 			// either side is drift, not only one missing from GitLab.
