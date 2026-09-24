@@ -17,6 +17,23 @@ Two, decided by which files a change touches:
 
 Docs-only changes are always **normal**, even inside a high path.
 
+## Issue readiness labels
+
+Three labels record whether an issue can go to an implementing agent. They are
+claims, not proof: the `/audit-issues` auditor re-verifies each against the
+issue and `main`, and reports a label it finds stale rather than trusting it.
+
+| Label | Applied by | Meaning | Removed when |
+|---|---|---|---|
+| `agent/ready` | a maintainer, typically after an audit found the issue eligible | the problem exists on `main`, the outcome and change surface are settled, and acceptance is testable | the issue changes materially, or a PR for it is open |
+| `human/decision-required` | anyone, typically when posting an audit concern | a product, API, compatibility, or security question is open, stated in a comment | the maintainer answers it in the issue |
+| `agent/blocked` | anyone | the issue waits on something outside it — another issue or PR, a release, access to a real store or engine | the blocker clears |
+
+An issue carrying `human/decision-required` or `agent/blocked` is not
+implementable, whatever else it carries. There are deliberately no risk,
+priority, or stage labels: the tier follows from the paths a change touches
+(above), and the README roadmap orders value.
+
 ## Stop conditions
 
 An implementing agent stops and reports — rather than keeps pushing — when:

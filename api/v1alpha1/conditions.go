@@ -14,6 +14,12 @@ const (
 	// GeneratorSucceededCondition reflects the outcome of the current or last
 	// generator run.
 	GeneratorSucceededCondition = "GeneratorSucceeded"
+
+	// DeletingCondition reports progress of the deletion policy once the
+	// Artifact is Terminating: False when the store refused the delete, so a
+	// blocked finalizer is visible on the object rather than only in the
+	// controller log.
+	DeletingCondition = "Deleting"
 )
 
 // Condition reasons.
@@ -37,6 +43,7 @@ const (
 	ReasonIncomingStampMismatch    = "IncomingStampMismatch"
 	ReasonGeneratorNotConfigured   = "GeneratorNotConfigured"
 	ReasonStoreUnavailable         = "StoreUnavailable"
+	ReasonStoreDeleteFailed        = "StoreDeleteFailed"
 	ReasonClassNotFound            = "ClassNotFound"
 	ReasonTemplateError            = "TemplateError"
 	ReasonExpired                  = "Expired"
@@ -58,4 +65,7 @@ const (
 	StateExpired     = "Expired"
 	StateSuspended   = "Suspended"
 	StateKeyConflict = "KeyConflict"
+	// StateDeleting is Terminating vocabulary: the deletion policy could not
+	// be applied (the store refused the delete) and the finalizer is retrying.
+	StateDeleting = "Deleting"
 )
