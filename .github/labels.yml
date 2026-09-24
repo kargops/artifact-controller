@@ -1,5 +1,5 @@
 # Label definitions. Sync after editing:
-#   while read -r name color desc; do gh label create "$name" --color "$color" --description "$desc" --force; done < <(yq -r '.[] | [.name, .color, .description] | @tsv' .github/labels.yml)
+#   while IFS=$'\t' read -r name color desc; do gh label create "$name" --color "$color" --description "$desc" --force; done < <(yq -r '.[] | [.name, .color, .description] | @tsv' .github/labels.yml)
 # or by hand with `gh label create <name> --color <color> --description <desc> --force`.
 # On GitLab (same names; the .gitlab/ templates apply them via /label quick actions).
 # `glab label create` cannot overwrite, so update by title first and create only
