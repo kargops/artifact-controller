@@ -1,7 +1,8 @@
-<!-- One logical change per PR. AGENTS.md is the operational contract — the
-checklist below is its invariants in checkbox form. Mirrored for GitLab in
-.gitlab/merge_request_templates/Default.md; ci/templates_test.go keeps the two
-in step. -->
+<!-- One logical change per merge request. AGENTS.md is the operational
+contract — the checklist below is its invariants in checkbox form. GitLab
+applies this template to every new MR because it is named Default.md; it
+mirrors .github/PULL_REQUEST_TEMPLATE.md, and ci/templates_test.go keeps the
+two in step. -->
 
 ## Summary
 
@@ -34,19 +35,22 @@ nothing to update" is the point. Details: AGENTS.md. -->
 
 ## Deferred work
 
-<!-- Anything this PR deliberately does not do, each with a named follow-up
+<!-- Anything this MR deliberately does not do, each with a named follow-up
 issue. Write `none` rather than leaving this blank. -->
 
 none
 
 ## Agent provenance
 
-<!-- Fill in if this PR was planned, implemented, or reviewed by an agent.
+<!-- Fill in if this MR was planned, implemented, or reviewed by an agent.
 Write `n/a` per role if not applicable. -->
 
 - Planner:
 - Implementer:
 - Reviewers:
 
-<!-- If this PR resolves an issue, use Closes/Fixes/Resolves so merge
-auto-closes it: -->
+<!-- If this MR resolves an issue, write `Closes #N` so merging auto-closes it.
+Quick actions below run when the MR is created; delete any that do not apply
+(e.g. `/draft` once the MR is ready for review). -->
+
+/draft
