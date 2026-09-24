@@ -1,7 +1,5 @@
 <!-- One logical change per PR. AGENTS.md is the operational contract — the
-checklist below is its invariants in checkbox form. Mirrored for GitLab in
-.gitlab/merge_request_templates/Default.md; ci/templates_test.go keeps the two
-in step. -->
+checklist below is its invariants in checkbox form. -->
 
 ## Summary
 

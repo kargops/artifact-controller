@@ -32,11 +32,7 @@ prunes fields whose CRD schema is stale (see AGENTS.md invariant 4).
 
 ## Pull requests
 
-- One logical change per PR (merge request, on GitLab); `./ci/test.sh` green.
-- Issue and PR templates exist for both platforms — `.github/` and
-  `.gitlab/` — with one label set in `.github/labels.yml`. Change them as a
-  pair; `ci/templates_test.go` fails when their sections, checklists, or
-  labels drift apart.
+- One logical change per PR; `./ci/test.sh` green.
 - New behavior needs a test that fails without the change. The envtest suite
   in `internal/controller/` shows the house style.
 - Chart content changes require a `Chart.yaml` version bump — published chart
