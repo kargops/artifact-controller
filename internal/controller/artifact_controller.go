@@ -244,6 +244,7 @@ func (r *ArtifactReconciler) reconcile(ctx context.Context, obj *artifactsv1.Art
 		return ctrl.Result{}, nil
 	}
 	in.Key = key
+	in.IncomingKey = class.IncomingKey(key)
 	obj.Status.SpecHash = specHash
 	obj.Status.Key = key
 
@@ -266,6 +267,19 @@ func (r *ArtifactReconciler) reconcile(ctx context.Context, obj *artifactsv1.Art
 		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	}
 
+	// Promotion needs the driver to support it. A class enabling it on one
+	// that does not is a configuration error, surfaced without running any
+	// generator (same posture as an unregistered driver).
+	if class.PromotionEnabled() {
+		if _, ok := driver.(store.Promoter); !ok {
+			markStalled(obj, artifactsv1.ReasonPromotionUnsupported,
+				"class %q enables promotion but driver %q does not support it", class.Name, class.Spec.Store.Driver)
+			conditions.MarkFalse(obj, fluxmeta.ReadyCondition, artifactsv1.ReasonPromotionUnsupported,
+				"class %q enables promotion but driver %q does not support it", class.Name, class.Spec.Store.Driver)
+			return ctrl.Result{RequeueAfter: time.Minute}, nil
+		}
+	}
+
 	// DeleteAfter: one-shot GC of the store object, then park as Expired.
 	// CRD validation rejects deleteAfter on observe-only Artifacts; the policy
 	// check here is defense in depth for objects admitted before the rule.
@@ -280,17 +294,17 @@ func (r *ArtifactReconciler) reconcile(ctx context.Context, obj *artifactsv1.Art
 	}
 
 	if obs.Exists {
-		return r.reconcileExisting(ctx, obj, class, obs, in, now)
+		return r.reconcileExisting(ctx, obj, class, driver, obs, in, now)
 	}
 	if obj.ObserveOnly() {
 		return r.reconcileMissingObserved(ctx, obj, in)
 	}
-	return r.reconcileMissing(ctx, obj, class, in, now)
+	return r.reconcileMissing(ctx, obj, class, driver, in, now)
 }
 
 // reconcileExisting handles a present store object: verify provenance, mark
 // Ready, keep verifying on the interval.
-func (r *ArtifactReconciler) reconcileExisting(ctx context.Context, obj *artifactsv1.Artifact, class *artifactsv1.ArtifactClass, obs store.Observation, in generator.Input, now time.Time) (ctrl.Result, error) {
+func (r *ArtifactReconciler) reconcileExisting(ctx context.Context, obj *artifactsv1.Artifact, class *artifactsv1.ArtifactClass, driver store.Driver, obs store.Observation, in generator.Input, now time.Time) (ctrl.Result, error) {
 	key, specHash := in.Key, in.SpecHash
 	if stamp := obs.Metadata[class.StampMetadataKey()]; stamp != "" && stamp != specHash {
 		obj.Status.State = artifactsv1.StateKeyConflict
@@ -316,13 +330,46 @@ func (r *ArtifactReconciler) reconcileExisting(ctx context.Context, obj *artifac
 		// An observe-only Artifact reports the drift but never acts on it: for
 		// a sensor, a Regenerate class policy degrades to Warn.
 		if class.DriftPolicy() == artifactsv1.DriftPolicyRegenerate && !obj.ObserveOnly() {
+			// Promotion parks disproven content at ContentMismatch and must
+			// not rebuild over it. A consistent replacement still regenerates.
+			// An unstamped object with no recorded content digest is not
+			// disproven: verifyPromoted would seal it in place (migration),
+			// which adopts the overwrite instead of rebuilding it.
+			if class.PromotionEnabled() &&
+				(obs.Metadata[class.ContentDigestKey()] != "" || obj.Status.ContentDigest != "") {
+				if res, handled, err := r.verifyPromoted(ctx, obj, class, driver, obs, in); handled {
+					return res, err
+				}
+			}
 			// Treat as missing so the normal generator path restores it.
 			obj.Status.Digest = ""
-			return r.reconcileMissing(ctx, obj, class, in, now)
+			return r.reconcileMissing(ctx, obj, class, driver, in, now)
 		}
 	} else if obs.Digest != "" && obs.Digest != obj.Status.Digest {
 		// Expected change (or first observation): this is the new baseline.
 		conditions.Delete(obj, artifactsv1.ArtifactDriftedCondition)
+	}
+
+	// Promotion classes gate readiness on content, not just the spec stamp.
+	// A Regenerate rebuild of an unstamped object is still in flight: the
+	// bytes that tripped drift are still at the key, and sealing them now
+	// would record the overwrite as verified content.
+	if class.PromotionEnabled() && class.DriftPolicy() == artifactsv1.DriftPolicyRegenerate && !obj.ObserveOnly() &&
+		(obj.Status.GeneratorRef != nil || obj.Status.GeneratorSucceededAt != nil) &&
+		obs.Metadata[class.ContentDigestKey()] == "" && obj.Status.ContentDigest == "" {
+		return r.reconcileMissing(ctx, obj, class, driver, in, now)
+	}
+	if class.PromotionEnabled() {
+		res, handled, err := r.verifyPromoted(ctx, obj, class, driver, obs, in)
+		if handled {
+			return res, err
+		}
+	}
+
+	// A class flipped back to direct-write stops asserting content; a stale
+	// recorded digest would misreport what this Artifact has verified.
+	if !class.PromotionEnabled() {
+		obj.Status.ContentDigest = ""
 	}
 
 	t := metav1.NewTime(now)
@@ -347,8 +394,191 @@ func (r *ArtifactReconciler) reconcileExisting(ctx context.Context, obj *artifac
 	return ctrl.Result{RequeueAfter: jittered(obj.GetInterval())}, nil
 }
 
+// verifyPromoted gates readiness of an existing store object for a
+// promotion-enabled class. The spec-hash stamp says what the object claims to
+// be; the content-digest stamp — written only by this controller's promotion,
+// and checked against the store's own checksum where the store computes one —
+// says the content is what was verified. handled=true means this function
+// wrote the outcome and the caller must return; handled=false means the
+// content checks passed (status.contentDigest is current) and the normal
+// Ready path continues.
+func (r *ArtifactReconciler) verifyPromoted(ctx context.Context, obj *artifactsv1.Artifact, class *artifactsv1.ArtifactClass, driver store.Driver, obs store.Observation, in generator.Input) (ctrl.Result, bool, error) {
+	key := in.Key
+	contentStamp := obs.Metadata[class.ContentDigestKey()]
+	switch {
+	case contentStamp == "" && obj.Status.ContentDigest == "":
+		// A pre-promotion object: the class migrated with this artifact
+		// already in the store. Full-policy artifacts adopt it into the model
+		// by promoting it in place; a sensor never writes, so it verifies
+		// what the direct-write model could and no more.
+		if obj.ObserveOnly() {
+			return ctrl.Result{}, false, nil
+		}
+		res, err := r.promoteInPlace(ctx, obj, class, driver, obs, in)
+		return res, true, err
+	case contentStamp == "":
+		// This Artifact recorded a promoted digest, and the stamp is gone:
+		// something replaced the object outside the promotion path.
+		return r.refuseContent(obj, fmt.Sprintf(
+			"object at %q carries no content-digest stamp %q but this Artifact verified promoted content %s",
+			key, class.ContentDigestKey(), obj.Status.ContentDigest)), true, nil
+	case obs.ContentSHA256 != "" && obs.ContentSHA256 != contentStamp:
+		// The store's own hash of the content disproves the stamp. Metadata
+		// is written by whoever holds write access; the store's checksum is
+		// computed from the bytes — this is poisoned or corrupted content.
+		return r.refuseContent(obj, fmt.Sprintf(
+			"content-digest stamp at %q claims %s but the store computes %s",
+			key, contentStamp, obs.ContentSHA256)), true, nil
+	}
+	if obj.Status.ContentDigest != "" && obj.Status.ContentDigest != contentStamp {
+		// Self-consistent content that differs from what this Artifact
+		// verified before. A sibling Artifact re-promoting the shared key
+		// looks exactly like this, so it is reported rather than refused —
+		// and if no run of ours explains it, the drift condition above has
+		// already fired alongside this event.
+		r.Recorder.Eventf(obj, corev1.EventTypeWarning, "ContentReplaced",
+			"promoted content at %q changed from %s to %s", key, obj.Status.ContentDigest, contentStamp)
+	}
+	obj.Status.ContentDigest = contentStamp
+	return ctrl.Result{}, false, nil
+}
+
+// refuseContent parks the Artifact in KeyConflict for content whose
+// provenance is disproven. Deliberately no automatic remediation: whatever
+// wrote it may write again, and silently rebuilding over evidence hides the
+// incident — deleting the store object is the human's call.
+func (r *ArtifactReconciler) refuseContent(obj *artifactsv1.Artifact, detail string) ctrl.Result {
+	obj.Status.State = artifactsv1.StateKeyConflict
+	conditions.Delete(obj, fluxmeta.ReconcilingCondition)
+	conditions.MarkFalse(obj, artifactsv1.ArtifactInStoreCondition, artifactsv1.ReasonContentMismatch, "%s", detail)
+	conditions.MarkFalse(obj, fluxmeta.ReadyCondition, artifactsv1.ReasonContentMismatch,
+		"%s; refusing to adopt or overwrite — delete the store object to rebuild", detail)
+	r.Recorder.Event(obj, corev1.EventTypeWarning, "ContentMismatch", detail)
+	return ctrl.Result{RequeueAfter: jittered(obj.GetInterval())}
+}
+
+// promoteInPlace stamps a pre-promotion object with the content digest it is
+// observed to have, adopting it into the promotion model without a rebuild —
+// the class-by-class migration path. Trust-on-first-use, deliberately: for an
+// object that predates promotion there is no record to verify against, and
+// the alternative is rebuilding every existing artifact on migration.
+func (r *ArtifactReconciler) promoteInPlace(ctx context.Context, obj *artifactsv1.Artifact, class *artifactsv1.ArtifactClass, driver store.Driver, obs store.Observation, in generator.Input) (ctrl.Result, error) {
+	promoter, ok := driver.(store.Promoter)
+	if !ok { // reconcile() already stalled this configuration; defense in depth
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
+	digest, err := promoter.Promote(ctx, store.PromoteRequest{
+		SourceKey:        in.Key,
+		DestKey:          in.Key,
+		SourceDigest:     obs.Digest,
+		Metadata:         map[string]string{class.StampMetadataKey(): in.SpecHash},
+		ContentDigestKey: class.ContentDigestKey(),
+	})
+	if err != nil {
+		conditions.MarkFalse(obj, fluxmeta.ReadyCondition, artifactsv1.ReasonPromotionFailed,
+			"stamp content digest at %q: %s", in.Key, err)
+		r.Recorder.Eventf(obj, corev1.EventTypeWarning, "PromotionFailed",
+			"stamp content digest at %q: %s", in.Key, err)
+		return ctrl.Result{RequeueAfter: jittered(30 * time.Second)}, nil
+	}
+	obj.Status.ContentDigest = digest
+	// The in-place copy gives the object a new store-side version id;
+	// re-baseline so the next observation does not read our own write as
+	// drift.
+	obj.Status.Digest = ""
+	obj.Status.State = artifactsv1.StateAwaitingArtifact
+	markReconciling(obj, artifactsv1.ReasonAwaitingArtifact, "promoted in place at %q; verifying", in.Key)
+	conditions.MarkFalse(obj, fluxmeta.ReadyCondition, artifactsv1.ReasonAwaitingArtifact,
+		"promoted; verifying artifact at %q", in.Key)
+	r.Recorder.Eventf(obj, corev1.EventTypeNormal, "ArtifactPromoted",
+		"stamped content digest %s on pre-promotion object at %q", digest, in.Key)
+	return ctrl.Result{RequeueAfter: time.Second}, nil
+}
+
+// promoteFromIncoming is the verification half of the two-phase write: the
+// run reported success, so the produced object is expected at the incoming
+// key, is verified there, and is copied to the canonical key by this
+// controller. Nothing else ever makes the canonical object appear.
+func (r *ArtifactReconciler) promoteFromIncoming(ctx context.Context, obj *artifactsv1.Artifact, class *artifactsv1.ArtifactClass, driver store.Driver, in generator.Input, now time.Time, maxAttempts int32, initialDelay, maxDelay time.Duration) (ctrl.Result, error) {
+	incomingKey := class.IncomingKey(in.Key)
+	iobs, err := driver.Observe(ctx, incomingKey)
+	if err != nil {
+		conditions.MarkFalse(obj, fluxmeta.ReadyCondition, artifactsv1.ReasonStoreUnavailable, "%s", err)
+		return ctrl.Result{RequeueAfter: jittered(30 * time.Second)}, nil
+	}
+	grace := class.GracePeriod()
+	elapsed := now.Sub(obj.Status.GeneratorSucceededAt.Time)
+	if !iobs.Exists {
+		if elapsed < grace {
+			obj.Status.State = artifactsv1.StateAwaitingArtifact
+			markReconciling(obj, artifactsv1.ReasonAwaitingArtifact,
+				"generator succeeded %s ago; waiting up to %s for object at incoming key %q",
+				elapsed.Round(time.Second), grace, incomingKey)
+			conditions.MarkFalse(obj, fluxmeta.ReadyCondition, artifactsv1.ReasonAwaitingArtifact,
+				"waiting for object at incoming key")
+			requeue := 10 * time.Second
+			if rem := grace - elapsed; rem < requeue {
+				requeue = rem + time.Second
+			}
+			return ctrl.Result{RequeueAfter: requeue}, nil
+		}
+		msg := fmt.Sprintf(
+			"generator succeeded but no object appeared at incoming key %q within %s; check that the generator uploads to {{ .IncomingKey }} and stamps %q",
+			incomingKey, grace, class.StampMetadataKey())
+		return r.recordAttemptFailure(obj, artifactsv1.ReasonSucceededWithoutArtifact, msg, now, maxAttempts, initialDelay, maxDelay)
+	}
+
+	// Promotion is strict about provenance: an unstamped incoming object
+	// could be anyone's, and promoting it would launder it into a verified
+	// artifact. Direct-write classes tolerate a missing stamp; this model's
+	// whole point is not to.
+	if stamp := iobs.Metadata[class.StampMetadataKey()]; stamp != in.SpecHash {
+		msg := fmt.Sprintf("object at incoming key %q is stamped %q, expected %s; refusing to promote",
+			incomingKey, stamp, in.SpecHash)
+		return r.recordAttemptFailure(obj, artifactsv1.ReasonIncomingStampMismatch, msg, now, maxAttempts, initialDelay, maxDelay)
+	}
+
+	promoter, ok := driver.(store.Promoter)
+	if !ok { // reconcile() already stalled this configuration; defense in depth
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
+	digest, err := promoter.Promote(ctx, store.PromoteRequest{
+		SourceKey:        incomingKey,
+		DestKey:          in.Key,
+		SourceDigest:     iobs.Digest,
+		Metadata:         map[string]string{class.StampMetadataKey(): in.SpecHash},
+		ContentDigestKey: class.ContentDigestKey(),
+	})
+	if err != nil {
+		// A store-level failure (permissions, transient API errors): retried
+		// on its own cadence without burning a generator attempt — the
+		// incoming object is still there, and rebuilding would not help.
+		conditions.MarkFalse(obj, fluxmeta.ReadyCondition, artifactsv1.ReasonPromotionFailed,
+			"promote %q to %q: %s", incomingKey, in.Key, err)
+		r.Recorder.Eventf(obj, corev1.EventTypeWarning, "PromotionFailed",
+			"promote %q to %q: %s", incomingKey, in.Key, err)
+		return ctrl.Result{RequeueAfter: jittered(30 * time.Second)}, nil
+	}
+	obj.Status.ContentDigest = digest
+	// The canonical object is our own fresh write; the next observation is
+	// the drift baseline.
+	obj.Status.Digest = ""
+	r.Recorder.Eventf(obj, corev1.EventTypeNormal, "ArtifactPromoted",
+		"promoted %q to %q (%s)", incomingKey, in.Key, digest)
+	// The incoming object is scratch; a failed cleanup is not a failed
+	// promotion — the lifecycle rule on the incoming prefix is the backstop.
+	if err := driver.Delete(ctx, incomingKey); err != nil {
+		logf.FromContext(ctx).Error(err, "cleaning up incoming object after promotion", "key", incomingKey)
+	}
+	obj.Status.State = artifactsv1.StateAwaitingArtifact
+	markReconciling(obj, artifactsv1.ReasonAwaitingArtifact, "promoted to %q; verifying", in.Key)
+	conditions.MarkFalse(obj, fluxmeta.ReadyCondition, artifactsv1.ReasonAwaitingArtifact,
+		"promoted; verifying artifact at %q", in.Key)
+	return ctrl.Result{RequeueAfter: time.Second}, nil
+}
+
 // reconcileMissing drives the generator machinery for an absent artifact.
-func (r *ArtifactReconciler) reconcileMissing(ctx context.Context, obj *artifactsv1.Artifact, class *artifactsv1.ArtifactClass, in generator.Input, now time.Time) (ctrl.Result, error) {
+func (r *ArtifactReconciler) reconcileMissing(ctx context.Context, obj *artifactsv1.Artifact, class *artifactsv1.ArtifactClass, driver store.Driver, in generator.Input, now time.Time) (ctrl.Result, error) {
 	if conditions.IsTrue(obj, fluxmeta.ReadyCondition) {
 		r.Recorder.Eventf(obj, corev1.EventTypeWarning, "ArtifactMissing",
 			"artifact disappeared from store key %q; re-triggering generator", in.Key)
@@ -414,7 +644,7 @@ func (r *ArtifactReconciler) reconcileMissing(ctx context.Context, obj *artifact
 		case err != nil:
 			return ctrl.Result{}, err
 		}
-		return r.evaluateRun(ctx, obj, class, run, now, maxAttempts, initialDelay, maxDelay)
+		return r.evaluateRun(ctx, obj, class, driver, run, in, now, maxAttempts, initialDelay, maxDelay)
 	}
 
 	// Backoff gate before a new attempt.
@@ -496,7 +726,7 @@ func (r *ArtifactReconciler) createRun(ctx context.Context, obj *artifactsv1.Art
 	return ctrl.Result{RequeueAfter: jittered(30 * time.Second)}, nil
 }
 
-func (r *ArtifactReconciler) evaluateRun(ctx context.Context, obj *artifactsv1.Artifact, class *artifactsv1.ArtifactClass, run *unstructured.Unstructured, now time.Time, maxAttempts int32, initialDelay, maxDelay time.Duration) (ctrl.Result, error) {
+func (r *ArtifactReconciler) evaluateRun(ctx context.Context, obj *artifactsv1.Artifact, class *artifactsv1.ArtifactClass, driver store.Driver, run *unstructured.Unstructured, in generator.Input, now time.Time, maxAttempts int32, initialDelay, maxDelay time.Duration) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	failed, ferr := r.Eval.EvalBool(class.Spec.Generator.FailedWhen, run.Object)
@@ -520,6 +750,12 @@ func (r *ArtifactReconciler) evaluateRun(ctx context.Context, obj *artifactsv1.A
 				"generator %s %q succeeded", run.GetKind(), run.GetName())
 			r.Recorder.Eventf(obj, corev1.EventTypeNormal, "GeneratorSucceeded",
 				"generator %s %q succeeded; verifying artifact at %q", run.GetKind(), run.GetName(), obj.Status.Key)
+		}
+		// Two-phase classes: the produced object is expected at the incoming
+		// key, and only this controller's promotion makes the canonical one
+		// appear.
+		if class.PromotionEnabled() {
+			return r.promoteFromIncoming(ctx, obj, class, driver, in, now, maxAttempts, initialDelay, maxDelay)
 		}
 		grace := class.GracePeriod()
 		elapsed := now.Sub(obj.Status.GeneratorSucceededAt.Time)

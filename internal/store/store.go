@@ -19,6 +19,13 @@ type Observation struct {
 	Exists bool
 	// Digest is a driver-specific version identifier of the observed object.
 	Digest string
+	// ContentSHA256 is the store's own full-object sha256 of the current
+	// content ("sha256:<hex>"), when the store exposes one. Unlike Metadata
+	// it is computed by the store rather than declared by the writer, which
+	// is what makes it usable for content verification. Empty when the store
+	// has no checksum for the object (never uploaded with one, composite
+	// multipart checksums, stores without checksum support).
+	ContentSHA256 string
 	// Metadata is the store-side object metadata (normalized to lowercase
 	// keys), which carries the generator's provenance stamp.
 	Metadata map[string]string
@@ -31,6 +38,36 @@ type Driver interface {
 	// Delete removes the object at key. Deleting an absent object is not an
 	// error.
 	Delete(ctx context.Context, key string) error
+}
+
+// PromoteRequest asks a driver to verify and promote one object.
+type PromoteRequest struct {
+	// SourceKey is the object to promote; DestKey is where it becomes the
+	// canonical artifact. They may be equal, which stamps the object in place
+	// (how a pre-promotion object is adopted into the model).
+	SourceKey string
+	DestKey   string
+	// SourceDigest, when set, is the Digest of a prior Observation of the
+	// source; promotion must fail if the object has changed since. The
+	// caller's provenance checks were made against that version, and a
+	// swapped object must not inherit them.
+	SourceDigest string
+	// Metadata is stamped onto the promoted object, replacing the source
+	// object's own metadata: provenance is the controller's statement, not
+	// the generator's.
+	Metadata map[string]string
+	// ContentDigestKey is the metadata key stamped with the content digest
+	// the driver computes.
+	ContentDigestKey string
+}
+
+// Promoter is the optional driver capability behind promotion-enabled
+// classes: hash the object at SourceKey, then copy it to DestKey stamped with
+// req.Metadata plus the computed content digest under ContentDigestKey —
+// guaranteeing the hashed bytes are the copied bytes. Returns the content
+// digest ("sha256:<hex>").
+type Promoter interface {
+	Promote(ctx context.Context, req PromoteRequest) (string, error)
 }
 
 // Factory builds a Driver from a class's store configuration.

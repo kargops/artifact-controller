@@ -21,12 +21,15 @@ type Input struct {
 	SpecHash string
 	// SpecHex is the bare hex of SpecHash, for contexts that forbid ':'
 	// (OCI tags).
-	SpecHex   string
-	Key       string
-	Name      string
-	Namespace string
-	Class     string
-	Attempt   int32
+	SpecHex string
+	Key     string
+	// IncomingKey is the scratch key generators of promotion-enabled classes
+	// must upload to; empty for direct-write classes.
+	IncomingKey string
+	Name        string
+	Namespace   string
+	Class       string
+	Attempt     int32
 }
 
 // RenderKey renders a store-key template.

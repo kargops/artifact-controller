@@ -9,6 +9,7 @@ package conformance
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"os"
@@ -104,10 +105,107 @@ func runContract(t *testing.T, d store.Driver, stampKey string, seed func(t *tes
 	}
 }
 
+// runPromotionContract is the Promoter capability contract, run for drivers
+// that implement it: promote copies the seeded incoming object to the
+// canonical key with the caller's metadata plus a content-digest stamp that
+// is the sha256 of the actual content; a stale source digest refuses to
+// promote; and promoting a key onto itself (the migration seal) stamps it in
+// place.
+func runPromotionContract(t *testing.T, d store.Driver, stampKey string, seed func(t *testing.T, key, content, stamp string)) {
+	t.Helper()
+	promoter, ok := d.(store.Promoter)
+	if !ok {
+		t.Fatalf("driver does not implement store.Promoter")
+	}
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%s-%d", strings.ToLower(t.Name()[strings.LastIndex(t.Name(), "/")+1:]), time.Now().UnixNano())
+	incoming, canonical := "incoming/promotion-"+suffix, "promotion-"+suffix
+	const stamp = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	const content = "promotion-content-one"
+	wantDigest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(content)))
+	t.Cleanup(func() {
+		_ = d.Delete(ctx, incoming)
+		_ = d.Delete(ctx, canonical)
+	})
+
+	seed(t, incoming, content, stamp)
+	obs, err := d.Observe(ctx, incoming)
+	if err != nil || !obs.Exists {
+		t.Fatalf("observe seeded incoming object: exists=%v err=%v", obs.Exists, err)
+	}
+
+	req := store.PromoteRequest{
+		SourceKey:        incoming,
+		DestKey:          canonical,
+		Metadata:         map[string]string{stampKey: stamp},
+		ContentDigestKey: artifactsv1.DefaultContentDigestKey,
+	}
+
+	stale := req
+	stale.SourceDigest = "etag:definitely-not-the-current-version"
+	if _, err := promoter.Promote(ctx, stale); err == nil {
+		t.Fatalf("promotion pinned to a stale source digest must fail, or a swapped object inherits the caller's verification")
+	}
+	if cobs, err := d.Observe(ctx, canonical); err != nil || cobs.Exists {
+		t.Fatalf("failed promotion must not create the canonical object: exists=%v err=%v", cobs.Exists, err)
+	}
+
+	req.SourceDigest = obs.Digest
+	digest, err := promoter.Promote(ctx, req)
+	if err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	if digest != wantDigest {
+		t.Fatalf("promote returned digest %q, want sha256 of the content %q", digest, wantDigest)
+	}
+
+	cobs, err := d.Observe(ctx, canonical)
+	if err != nil || !cobs.Exists {
+		t.Fatalf("observe promoted object: exists=%v err=%v", cobs.Exists, err)
+	}
+	if got := cobs.Metadata[stampKey]; got != stamp {
+		t.Fatalf("promoted object lost the provenance stamp: metadata[%q] = %q, want %q", stampKey, got, stamp)
+	}
+	if got := cobs.Metadata[artifactsv1.DefaultContentDigestKey]; got != wantDigest {
+		t.Fatalf("promoted object content-digest stamp = %q, want %q", got, wantDigest)
+	}
+	// Where the store computes its own checksum, it must agree with the stamp
+	// — this pair is exactly what verification compares.
+	if cobs.ContentSHA256 != "" && cobs.ContentSHA256 != wantDigest {
+		t.Fatalf("store-computed ContentSHA256 %q disagrees with the promoted content %q", cobs.ContentSHA256, wantDigest)
+	}
+
+	// The migration seal: promoting a key onto itself re-stamps in place.
+	seal := store.PromoteRequest{
+		SourceKey:        canonical,
+		DestKey:          canonical,
+		SourceDigest:     cobs.Digest,
+		Metadata:         map[string]string{stampKey: stamp, "sealed": "true"},
+		ContentDigestKey: artifactsv1.DefaultContentDigestKey,
+	}
+	sealDigest, err := promoter.Promote(ctx, seal)
+	if err != nil {
+		t.Fatalf("promote in place: %v", err)
+	}
+	if sealDigest != wantDigest {
+		t.Fatalf("in-place promotion digest %q, want %q", sealDigest, wantDigest)
+	}
+	sobs, err := d.Observe(ctx, canonical)
+	if err != nil || !sobs.Exists {
+		t.Fatalf("observe sealed object: exists=%v err=%v", sobs.Exists, err)
+	}
+	if sobs.Metadata["sealed"] != "true" || sobs.Metadata[stampKey] != stamp {
+		t.Fatalf("in-place promotion did not replace metadata: %v", sobs.Metadata)
+	}
+}
+
 func TestFakeDriverConformance(t *testing.T) {
 	s := fake.New()
 	runContract(t, s, artifactsv1.DefaultStampMetadataKey, func(t *testing.T, key, content, stamp string) {
 		s.Put(key, "digest-of-"+content, map[string]string{artifactsv1.DefaultStampMetadataKey: stamp})
+	})
+	runPromotionContract(t, s, artifactsv1.DefaultStampMetadataKey, func(t *testing.T, key, content, stamp string) {
+		s.PutContent(key, content, map[string]string{artifactsv1.DefaultStampMetadataKey: stamp})
 	})
 }
 
@@ -155,7 +253,7 @@ func TestS3DriverConformanceAgainstMinIO(t *testing.T) {
 		t.Fatalf("create bucket: %v", err)
 	}
 
-	runContract(t, driver, artifactsv1.DefaultStampMetadataKey, func(t *testing.T, key, content, stamp string) {
+	seedS3 := func(t *testing.T, key, content, stamp string) {
 		t.Helper()
 		_, err := client.PutObject(context.Background(), &awss3.PutObjectInput{
 			Bucket:   aws.String("conformance"),
@@ -166,7 +264,9 @@ func TestS3DriverConformanceAgainstMinIO(t *testing.T) {
 		if err != nil {
 			t.Fatalf("seed s3 object: %v", err)
 		}
-	})
+	}
+	runContract(t, driver, artifactsv1.DefaultStampMetadataKey, seedS3)
+	runPromotionContract(t, driver, artifactsv1.DefaultStampMetadataKey, seedS3)
 }
 
 func TestOCIDriverConformanceAgainstRegistry(t *testing.T) {

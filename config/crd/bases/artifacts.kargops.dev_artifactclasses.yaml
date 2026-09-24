@@ -134,9 +134,11 @@ spec:
                     description: |-
                       Template is the full object to create per run (Argo Workflow, Tekton
                       PipelineRun, batch/v1 Job, ...). Every string leaf may use Go template
-                      syntax with .Identity, .Params, .SpecHash, .Key, .Name, .Namespace,
-                      .Class and .Attempt. metadata.name/namespace and the controller owner
-                      reference are set by the controller.
+                      syntax with .Identity, .Params, .SpecHash, .Key, .IncomingKey, .Name,
+                      .Namespace, .Class and .Attempt. .IncomingKey is the scratch key
+                      promotion-enabled classes must upload to (empty otherwise).
+                      metadata.name/namespace and the controller owner reference are set by
+                      the controller.
                     type: object
                     x-kubernetes-preserve-unknown-fields: true
                 required:
@@ -364,6 +366,38 @@ spec:
                         type: string
                     required:
                     - repository
+                    type: object
+                  promotion:
+                    description: |-
+                      Promotion, when set, switches the class to the two-phase write model:
+                      generators write only under the incoming prefix, and the controller
+                      verifies the produced object, stamps a content digest alongside the
+                      spec-hash stamp, and copies it to the canonical key itself. Canonical
+                      keys then need write access for the controller's identity only, so an
+                      identity that can write the incoming prefix can influence an artifact
+                      only while it is being built — never overwrite a promoted one
+                      undetectably. Unset (the default) is the direct-write model: generators
+                      write the canonical key, and verification rests on the spec-hash stamp
+                      alone. Supported by the s3 driver (and fake, for tests); a class
+                      enabling it on any other driver stalls with PromotionUnsupported.
+                    properties:
+                      contentDigestKey:
+                        default: artifact-content-sha256
+                        description: |-
+                          ContentDigestKey is the store metadata key the controller stamps at
+                          promotion time with the sha256 of the promoted object's content
+                          ("sha256:<hex>"). Verification then requires the store's own view of
+                          the content to keep matching this stamp.
+                        type: string
+                      incomingPrefix:
+                        default: incoming/
+                        description: |-
+                          IncomingPrefix is prepended to the rendered key to form the incoming
+                          (scratch) key generators write to, exposed to generator templates as
+                          .IncomingKey. Scope generator write access to this prefix, and pair it
+                          with a store lifecycle rule: promotion deletes the incoming object on
+                          success, but failed runs leave scratch behind.
+                        type: string
                     type: object
                   repoManager:
                     description: RepoManager configures the artifactory and nexus

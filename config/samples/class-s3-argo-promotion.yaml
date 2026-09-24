@@ -1,0 +1,46 @@
+# The Argo class again, with promotion (two-phase writes): the workflow's
+# role can only write incoming/, and the controller verifies the produced
+# object, stamps a content digest, and copies it to the canonical key itself.
+# Readiness gates on that promotion — an overwrite of a canonical object
+# cannot re-earn Ready by re-stamping the spec hash.
+apiVersion: artifacts.kargops.dev/v1alpha1
+kind: ArtifactClass
+metadata:
+  name: s3-game-clients-argo-promoted
+spec:
+  store:
+    driver: s3
+    keyTemplate: "clients/{{ .SpecHash }}.tar.gz"
+    s3:
+      bucket: game-clients
+      region: eu-west-1
+    promotion: {}
+    # Defaults shown; pair incomingPrefix with a bucket lifecycle rule —
+    # failed runs leave scratch behind, promotion only cleans up on success.
+    # promotion:
+    #   incomingPrefix: incoming/
+    #   contentDigestKey: artifact-content-sha256
+  generator:
+    template:
+      apiVersion: argoproj.io/v1alpha1
+      kind: Workflow
+      spec:
+        workflowTemplateRef:
+          name: build-game-client
+        arguments:
+          parameters:
+            - name: git-ref
+              value: "{{ .Identity.gitRef }}"
+            - name: platform
+              value: "{{ .Identity.platform }}"
+            - name: arch
+              value: "{{ .Identity.arch }}"
+            # The only template change from the direct-write class: upload to
+            # the incoming key. Stamping stays mandatory — an unstamped
+            # incoming object is refused, not promoted.
+            - name: s3-key
+              value: "{{ .IncomingKey }}"
+            - name: stamp
+              value: "{{ .SpecHash }}"
+    succeededWhen: "object.status.phase == 'Succeeded'"
+    failedWhen: "object.status.phase in ['Failed', 'Error']"
