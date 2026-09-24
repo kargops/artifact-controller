@@ -237,6 +237,13 @@ func TestGitLabIssueTemplatesMatchGitHubForms(t *testing.T) {
 			label := el.Attributes.Label
 			fields = append(fields, label)
 			body := bodies[label]
+			// GitLab cannot enforce required fields; its templates say every
+			// section is required unless the heading ends "(optional)". The
+			// heading equals the form label, so pin that marker to the form's
+			// own required flag.
+			if optional := strings.HasSuffix(label, "(optional)"); optional == el.Validations.Required {
+				t.Errorf("%s: field %q has required=%v, but its label says optional=%v — GitLab reporters read the label", ghPath, label, el.Validations.Required, optional)
+			}
 			// Presence as well as value: removing a description or render on
 			// GitHub must remove the GitLab comment or code fence too. A
 			// dropdown's comment is its option list, compared below.
