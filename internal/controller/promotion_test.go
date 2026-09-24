@@ -223,6 +223,71 @@ func TestPromotionRegenerateRefusesStrippedStamp(t *testing.T) {
 	}).WithTimeout(time.Second).Should(Succeed())
 }
 
+func TestPromotionRegenerateRebuildsUnstampedDrift(t *testing.T) {
+	g := NewWithT(t)
+	// Direct-write era: the artifact is verified, with a store digest and
+	// no content digest. Promotion is flipped on only after the bytes change.
+	class := newClass("promo-unstamped-drift", 3, 30*time.Second, time.Second)
+	g.Expect(k8sClient.Create(testCtx, class)).To(Succeed())
+	fakeStore.Put(storeKey("promo9"), "digest-legacy", stamped("promo9"))
+	g.Expect(k8sClient.Create(testCtx, newArtifact("promo9", "promo-unstamped-drift"))).To(Succeed())
+	g.Eventually(func(g Gomega) {
+		a := getArtifact(g, "promo9")
+		g.Expect(a.Status.Digest).To(Equal("digest-legacy"))
+		g.Expect(a.Status.ContentDigest).To(BeEmpty())
+		g.Expect(apimeta.IsStatusConditionTrue(a.Status.Conditions, fluxmeta.ReadyCondition)).To(BeTrue())
+	}).Should(Succeed())
+
+	// Freeze verification, then overwrite and enable promotion together so
+	// the next reconcile sees drifted, unstamped bytes and an empty
+	// recorded content digest — the migration race.
+	g.Eventually(func(g Gomega) {
+		a := getArtifact(g, "promo9")
+		a.Spec.Suspend = true
+		g.Expect(k8sClient.Update(testCtx, a)).To(Succeed())
+	}).Should(Succeed())
+	g.Eventually(func(g Gomega) {
+		g.Expect(getArtifact(g, "promo9").Status.State).To(Equal(artifactsv1.StateSuspended))
+	}).Should(Succeed())
+
+	fakeStore.Put(storeKey("promo9"), "digest-overwrite", stamped("promo9"))
+	g.Eventually(func(g Gomega) {
+		c := &artifactsv1.ArtifactClass{}
+		g.Expect(k8sClient.Get(testCtx, types.NamespacedName{Name: "promo-unstamped-drift"}, c)).To(Succeed())
+		c.Spec.Store.Promotion = &artifactsv1.PromotionSpec{}
+		c.Spec.Drift = &artifactsv1.DriftSpec{Policy: artifactsv1.DriftPolicyRegenerate}
+		c.Spec.Generator.Template = runtime.RawExtension{Raw: []byte(promoCMTemplate)}
+		g.Expect(k8sClient.Update(testCtx, c)).To(Succeed())
+	}).Should(Succeed())
+	g.Eventually(func(g Gomega) {
+		a := getArtifact(g, "promo9")
+		a.Spec.Suspend = false
+		g.Expect(k8sClient.Update(testCtx, a)).To(Succeed())
+	}).Should(Succeed())
+
+	// Regenerate rebuilds. It must not stamp the overwrite as verified content.
+	run := cmName("promo9", "promo9", 1)
+	g.Eventually(func(g Gomega) {
+		cm := &corev1.ConfigMap{}
+		g.Expect(k8sClient.Get(testCtx, types.NamespacedName{Namespace: testNS, Name: run}, cm)).To(Succeed())
+		a := getArtifact(g, "promo9")
+		g.Expect(a.Status.ContentDigest).To(BeEmpty())
+		g.Expect(a.Status.State).NotTo(Equal(artifactsv1.StateReady))
+		obs, err := fakeStore.Observe(testCtx, storeKey("promo9"))
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(obs.Metadata[artifactsv1.DefaultContentDigestKey]).To(BeEmpty())
+	}).Should(Succeed())
+	g.Consistently(func(g Gomega) {
+		a := getArtifact(g, "promo9")
+		g.Expect(a.Status.ContentDigest).To(BeEmpty())
+		g.Expect(a.Status.State).NotTo(Equal(artifactsv1.StateReady))
+		obs, err := fakeStore.Observe(testCtx, storeKey("promo9"))
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(obs.Metadata[artifactsv1.DefaultContentDigestKey]).To(BeEmpty())
+		g.Expect(obs.Digest).To(Equal("digest-overwrite"))
+	}).WithTimeout(2 * time.Second).Should(Succeed())
+}
+
 func TestPromotionDetectsStrippedStampAfterReady(t *testing.T) {
 	g := NewWithT(t)
 	md := stamped("promo6")

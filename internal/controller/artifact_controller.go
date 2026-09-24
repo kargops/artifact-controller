@@ -332,7 +332,11 @@ func (r *ArtifactReconciler) reconcileExisting(ctx context.Context, obj *artifac
 		if class.DriftPolicy() == artifactsv1.DriftPolicyRegenerate && !obj.ObserveOnly() {
 			// Promotion parks disproven content at ContentMismatch and must
 			// not rebuild over it. A consistent replacement still regenerates.
-			if class.PromotionEnabled() {
+			// An unstamped object with no recorded content digest is not
+			// disproven: verifyPromoted would seal it in place (migration),
+			// which adopts the overwrite instead of rebuilding it.
+			if class.PromotionEnabled() &&
+				(obs.Metadata[class.ContentDigestKey()] != "" || obj.Status.ContentDigest != "") {
 				if res, handled, err := r.verifyPromoted(ctx, obj, class, driver, obs, in); handled {
 					return res, err
 				}
@@ -347,6 +351,14 @@ func (r *ArtifactReconciler) reconcileExisting(ctx context.Context, obj *artifac
 	}
 
 	// Promotion classes gate readiness on content, not just the spec stamp.
+	// A Regenerate rebuild of an unstamped object is still in flight: the
+	// bytes that tripped drift are still at the key, and sealing them now
+	// would record the overwrite as verified content.
+	if class.PromotionEnabled() && class.DriftPolicy() == artifactsv1.DriftPolicyRegenerate && !obj.ObserveOnly() &&
+		(obj.Status.GeneratorRef != nil || obj.Status.GeneratorSucceededAt != nil) &&
+		obs.Metadata[class.ContentDigestKey()] == "" && obj.Status.ContentDigest == "" {
+		return r.reconcileMissing(ctx, obj, class, driver, in, now)
+	}
 	if class.PromotionEnabled() {
 		res, handled, err := r.verifyPromoted(ctx, obj, class, driver, obs, in)
 		if handled {
