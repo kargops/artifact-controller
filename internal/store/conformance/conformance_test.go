@@ -34,9 +34,12 @@ import (
 )
 
 // Image pins follow the repo convention: never "latest". registry:3 is the
-// same image the quickstart runs in-cluster.
+// same image the quickstart runs in-cluster. MinIO's community edition is
+// archived and its Docker Hub repository is gone; the last release survives on
+// MinIO's Quay mirror, pinned by digest until the suite moves to a maintained
+// S3-compatible server.
 const (
-	minioImage    = "minio/minio:RELEASE.2025-07-23T15-54-02Z"
+	minioImage    = "quay.io/minio/minio:RELEASE.2025-07-23T15-54-02Z@sha256:d249d1fb6966de4d8ad26c04754b545205ff15a62e4fd19ebd0f26fa5baacbc0"
 	registryImage = "registry:3"
 )
 
