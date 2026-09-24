@@ -2,8 +2,13 @@
 #   while read -r name color desc; do gh label create "$name" --color "$color" --description "$desc" --force; done < <(yq -r '.[] | [.name, .color, .description] | @tsv' .github/labels.yml)
 # or by hand with `gh label create <name> --color <color> --description <desc> --force`.
 #
-# One label per relevant axis. Deliberately small: no stage/priority/risk axes
-# until there is a program to manage (see docs/agent-workflow.md).
+# One label per relevant axis. Deliberately small: no priority or risk axes
+# until there is a program to manage. Risk tier is derived from the paths a
+# change touches, not labelled (see docs/agent-workflow.md).
+#
+# The agent/* and human/* axis is the handshake between a maintainer's
+# judgement and an agent's autonomy: agent/ready is the only signal that an
+# issue may be implemented by an agent, and only a human applies it.
 
 - name: type/bug
   color: d73a4a
@@ -36,6 +41,16 @@
 - name: area/docs
   color: e4e669
   description: README, quickstart, AGENTS.md
+
+- name: agent/ready
+  color: 0e8a16
+  description: Human-confirmed ready for an agent to implement
+- name: agent/blocked
+  color: b60205
+  description: Waiting on something outside this issue (dependency, release, access)
+- name: human/decision-required
+  color: d93f0b
+  description: A maintainer decision is open; not implementable until answered
 
 - name: good first issue
   color: 7057ff
