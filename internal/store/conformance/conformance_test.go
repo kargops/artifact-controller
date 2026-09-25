@@ -243,16 +243,16 @@ func startContainer(t *testing.T, image, port string, env []string, cmd []string
 	args := append([]string{"run", "-d", "--rm", "-p", "127.0.0.1:0:" + port}, env...)
 	args = append(args, image)
 	args = append(args, cmd...)
-	out, err := exec.Command("docker", args...).Output()
+	out, err := exec.Command("docker", args...).CombinedOutput()
 	if err != nil {
-		t.Fatalf("docker run %s: %v", image, err)
+		t.Fatalf("docker run %s: %s", image, commandFailureMessage(err, out))
 	}
 	id := strings.TrimSpace(string(out))
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", id).Run() })
 
-	mapped, err := exec.Command("docker", "port", id, port+"/tcp").Output()
+	mapped, err := exec.Command("docker", "port", id, port+"/tcp").CombinedOutput()
 	if err != nil {
-		t.Fatalf("docker port %s: %v", id, err)
+		t.Fatalf("docker port %s: %s", id, commandFailureMessage(err, mapped))
 	}
 	// "0.0.0.0:49153" or "127.0.0.1:49153", possibly multiple lines.
 	hostPort := strings.TrimSpace(strings.Split(string(mapped), "\n")[0])
@@ -274,5 +274,39 @@ func startContainer(t *testing.T, image, port string, env []string, cmd []string
 			t.Fatalf("%s not ready after 60s at %s (last error: %v)\ncontainer logs:\n%s", image, url, err, logs)
 		}
 		time.Sleep(300 * time.Millisecond)
+	}
+}
+
+func commandFailureMessage(err error, output []byte) string {
+	if detail := strings.TrimSpace(string(output)); detail != "" {
+		return fmt.Sprintf("%v: %s", err, detail)
+	}
+	return err.Error()
+}
+
+func TestCommandFailureMessageIncludesOutput(t *testing.T) {
+	err := fmt.Errorf("exit status 125")
+	if got, want := commandFailureMessage(err, []byte("pull denied\n")), "exit status 125: pull denied"; got != want {
+		t.Fatalf("commandFailureMessage() = %q, want %q", got, want)
+	}
+	if got, want := commandFailureMessage(err, nil), "exit status 125"; got != want {
+		t.Fatalf("commandFailureMessage() without output = %q, want %q", got, want)
+	}
+}
+
+func TestCommandFailureMessageIncludesCapturedStderr(t *testing.T) {
+	if os.Getenv("ARTIFACT_CONTROLLER_COMMAND_HELPER") == "1" {
+		_, _ = fmt.Fprint(os.Stderr, "pull denied")
+		os.Exit(125)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCommandFailureMessageIncludesCapturedStderr$")
+	cmd.Env = append(os.Environ(), "ARTIFACT_CONTROLLER_COMMAND_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("helper command succeeded, want exit status 125")
+	}
+	if got := commandFailureMessage(err, output); !strings.Contains(got, "pull denied") {
+		t.Fatalf("commandFailureMessage() = %q, want captured stderr", got)
 	}
 }
