@@ -262,7 +262,8 @@ func (r *ArtifactReconciler) reconcile(ctx context.Context, obj *artifactsv1.Art
 
 	driver, err := r.Registry.DriverFor(ctx, class)
 	if err != nil {
-		conditions.MarkFalse(obj, fluxmeta.ReadyCondition, artifactsv1.ReasonStoreUnavailable, "%s", err)
+		logf.FromContext(ctx).Error(err, "store driver unavailable")
+		conditions.MarkFalse(obj, fluxmeta.ReadyCondition, artifactsv1.ReasonStoreUnavailable, "%s", userVisibleError(err))
 		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	}
 
@@ -275,7 +276,8 @@ func (r *ArtifactReconciler) reconcile(ctx context.Context, obj *artifactsv1.Art
 
 	obs, err := driver.Observe(ctx, key)
 	if err != nil {
-		conditions.MarkFalse(obj, fluxmeta.ReadyCondition, artifactsv1.ReasonStoreUnavailable, "%s", err)
+		logf.FromContext(ctx).Error(err, "store observe failed")
+		conditions.MarkFalse(obj, fluxmeta.ReadyCondition, artifactsv1.ReasonStoreUnavailable, "%s", userVisibleError(err))
 		return ctrl.Result{RequeueAfter: jittered(30 * time.Second)}, nil
 	}
 
@@ -475,9 +477,10 @@ func (r *ArtifactReconciler) createRun(ctx context.Context, obj *artifactsv1.Art
 				"generator %q already exists and is not owned by this Artifact", name)
 			return ctrl.Result{RequeueAfter: time.Minute}, nil
 		}
-		r.Recorder.Eventf(obj, corev1.EventTypeWarning, "GeneratorCreateFailed", "%s", err)
+		logf.FromContext(ctx).Error(err, "create generator failed")
+		r.Recorder.Eventf(obj, corev1.EventTypeWarning, "GeneratorCreateFailed", "%s", userVisibleError(err))
 		conditions.MarkFalse(obj, fluxmeta.ReadyCondition, artifactsv1.ReasonGeneratorFailed,
-			"create generator: %s", err)
+			"create generator: %s", userVisibleError(err))
 		return ctrl.Result{RequeueAfter: jittered(time.Minute)}, nil
 	}
 
@@ -720,14 +723,16 @@ func (r *ArtifactReconciler) deleteAbandonedRun(ctx context.Context, obj *artifa
 func (r *ArtifactReconciler) reconcileExpired(ctx context.Context, obj *artifactsv1.Artifact, class *artifactsv1.ArtifactClass, driver store.Driver, key, specHash string, now time.Time) (ctrl.Result, error) {
 	obs, err := driver.Observe(ctx, key)
 	if err != nil {
-		conditions.MarkFalse(obj, fluxmeta.ReadyCondition, artifactsv1.ReasonStoreUnavailable, "%s", err)
+		logf.FromContext(ctx).Error(err, "store observe failed during deleteAfter")
+		conditions.MarkFalse(obj, fluxmeta.ReadyCondition, artifactsv1.ReasonStoreUnavailable, "%s", userVisibleError(err))
 		return ctrl.Result{RequeueAfter: jittered(time.Minute)}, nil
 	}
 	if obs.Exists {
 		if stamp := obs.Metadata[class.StampMetadataKey()]; stamp == "" || stamp == specHash {
 			if err := driver.Delete(ctx, key); err != nil {
+				logf.FromContext(ctx).Error(err, "deleteAfter store cleanup failed")
 				conditions.MarkFalse(obj, fluxmeta.ReadyCondition, artifactsv1.ReasonStoreUnavailable,
-					"deleteAfter cleanup: %s", err)
+					"deleteAfter cleanup: %s", userVisibleError(err))
 				return ctrl.Result{RequeueAfter: jittered(time.Minute)}, nil
 			}
 			r.Recorder.Eventf(obj, corev1.EventTypeNormal, "ArtifactDeleted",
@@ -793,13 +798,16 @@ func (r *ArtifactReconciler) reconcileDelete(ctx context.Context, obj *artifacts
 						// with no signal beyond the controller log — say it
 						// on the object, where kubectl and metrics can see
 						// it, and let the returned error drive the retry.
+						// Conditions/Events get a redacted form; the return
+						// value keeps the raw error for controller logs.
 						obj.Status.State = artifactsv1.StateDeleting
+						visible := userVisibleError(err)
 						conditions.MarkFalse(obj, artifactsv1.DeletingCondition, artifactsv1.ReasonStoreDeleteFailed,
-							"delete artifact at %q: %s", obj.Status.Key, err)
+							"delete artifact at %q: %s", obj.Status.Key, visible)
 						conditions.MarkFalse(obj, fluxmeta.ReadyCondition, artifactsv1.ReasonStoreDeleteFailed,
-							"deletionPolicy Delete is blocked: %s", err)
+							"deletionPolicy Delete is blocked: %s", visible)
 						r.Recorder.Eventf(obj, corev1.EventTypeWarning, "DeletionBlocked",
-							"delete artifact at %q: %s", obj.Status.Key, err)
+							"delete artifact at %q: %s", obj.Status.Key, visible)
 						return ctrl.Result{}, err
 					}
 					r.Recorder.Eventf(obj, corev1.EventTypeNormal, "ArtifactDeleted",
