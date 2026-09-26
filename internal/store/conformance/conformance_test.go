@@ -9,6 +9,7 @@ package conformance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -243,16 +244,15 @@ func startContainer(t *testing.T, image, port string, env []string, cmd []string
 	args := append([]string{"run", "-d", "--rm", "-p", "127.0.0.1:0:" + port}, env...)
 	args = append(args, image)
 	args = append(args, cmd...)
-	out, err := exec.Command("docker", args...).Output()
+	id, err := detachedContainerID(exec.Command("docker", args...))
 	if err != nil {
-		t.Fatalf("docker run %s: %v", image, err)
+		t.Fatalf("docker run %s: %s", image, err)
 	}
-	id := strings.TrimSpace(string(out))
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", id).Run() })
 
 	mapped, err := exec.Command("docker", "port", id, port+"/tcp").Output()
 	if err != nil {
-		t.Fatalf("docker port %s: %v", id, err)
+		t.Fatalf("docker port %s: %s", id, commandFailureMessage(err, exitStderr(err)))
 	}
 	// "0.0.0.0:49153" or "127.0.0.1:49153", possibly multiple lines.
 	hostPort := strings.TrimSpace(strings.Split(string(mapped), "\n")[0])
@@ -274,5 +274,100 @@ func startContainer(t *testing.T, image, port string, env []string, cmd []string
 			t.Fatalf("%s not ready after 60s at %s (last error: %v)\ncontainer logs:\n%s", image, url, err, logs)
 		}
 		time.Sleep(300 * time.Millisecond)
+	}
+}
+
+func commandFailureMessage(err error, output []byte) string {
+	if detail := strings.TrimSpace(string(output)); detail != "" {
+		return fmt.Sprintf("%v: %s", err, detail)
+	}
+	return err.Error()
+}
+
+// detachedContainerID parses the stdout-only container ID from `docker run -d`.
+// Docker may emit successful image-pull or warning diagnostics to stderr; those
+// must not be mixed into the ID used for cleanup and `docker port`.
+func detachedContainerID(cmd *exec.Cmd) (string, error) {
+	out, err := cmd.Output()
+	if err != nil {
+		return "", errors.New(commandFailureMessage(err, exitStderr(err)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func exitStderr(err error) []byte {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.Stderr
+	}
+	return nil
+}
+
+func TestCommandFailureMessageIncludesOutput(t *testing.T) {
+	err := fmt.Errorf("exit status 125")
+	if got, want := commandFailureMessage(err, []byte("pull denied\n")), "exit status 125: pull denied"; got != want {
+		t.Fatalf("commandFailureMessage() = %q, want %q", got, want)
+	}
+	if got, want := commandFailureMessage(err, nil), "exit status 125"; got != want {
+		t.Fatalf("commandFailureMessage() without output = %q, want %q", got, want)
+	}
+}
+
+func TestCommandFailureMessageIncludesCapturedStderr(t *testing.T) {
+	if os.Getenv("ARTIFACT_CONTROLLER_COMMAND_HELPER") == "1" {
+		_, _ = fmt.Fprint(os.Stderr, "pull denied")
+		os.Exit(125)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCommandFailureMessageIncludesCapturedStderr$")
+	cmd.Env = append(os.Environ(), "ARTIFACT_CONTROLLER_COMMAND_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("helper command succeeded, want exit status 125")
+	}
+	if got := commandFailureMessage(err, output); !strings.Contains(got, "pull denied") {
+		t.Fatalf("commandFailureMessage() = %q, want captured stderr", got)
+	}
+}
+
+func TestDetachedContainerIDUsesStdoutOnly(t *testing.T) {
+	if os.Getenv("ARTIFACT_CONTROLLER_COMMAND_HELPER") == "run-ok" {
+		fmt.Fprint(os.Stderr, "warning: pulled image\n")
+		fmt.Fprint(os.Stdout, "abc123def456\n")
+		os.Exit(0)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestDetachedContainerIDUsesStdoutOnly$")
+	cmd.Env = append(os.Environ(), "ARTIFACT_CONTROLLER_COMMAND_HELPER=run-ok")
+	id, err := detachedContainerID(cmd)
+	if err != nil {
+		t.Fatalf("detachedContainerID() error = %v", err)
+	}
+	if id != "abc123def456" {
+		t.Fatalf("detachedContainerID() = %q, want container ID without stderr diagnostics", id)
+	}
+}
+
+func TestDetachedContainerIDFailureReportsStderrOnly(t *testing.T) {
+	if os.Getenv("ARTIFACT_CONTROLLER_COMMAND_HELPER") == "run-fail" {
+		fmt.Fprint(os.Stdout, "not-the-id\n")
+		fmt.Fprint(os.Stderr, "pull denied")
+		os.Exit(125)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestDetachedContainerIDFailureReportsStderrOnly$")
+	cmd.Env = append(os.Environ(), "ARTIFACT_CONTROLLER_COMMAND_HELPER=run-fail")
+	id, err := detachedContainerID(cmd)
+	if err == nil {
+		t.Fatal("detachedContainerID() succeeded, want failure")
+	}
+	if id != "" {
+		t.Fatalf("detachedContainerID() id = %q, want empty on failure", id)
+	}
+	if !strings.Contains(err.Error(), "pull denied") {
+		t.Fatalf("detachedContainerID() error = %q, want stderr", err)
+	}
+	if strings.Contains(err.Error(), "not-the-id") {
+		t.Fatalf("detachedContainerID() error = %q, want stderr only", err)
 	}
 }
